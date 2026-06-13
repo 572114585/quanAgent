@@ -1,0 +1,4 @@
+ddgs
+deepagents
+langchain-openai
+langfuse
