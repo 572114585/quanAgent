@@ -8,6 +8,8 @@ from time_tools import get_current_time
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 import uuid
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 load_dotenv()
 
@@ -28,7 +30,9 @@ agent = create_deep_agent(
     model=llm,
     system_prompt=system_prompt,
     backend=filebackend,
-    tools=[web_search,get_current_time]
+    tools=[web_search,get_current_time],
+    interrupt_on={"web_search": True},
+    checkpointer=MemorySaver(),
 )
 session_id = str(uuid.uuid4())
 turn_count = 0
@@ -42,19 +46,61 @@ while True:
 
     turn_count += 1
     need_prefix = True
-    for msg_chunk, _meta in agent.stream(
-        {"messages": [("human", user_input)]},
-        stream_mode="messages",
-        config={
-            "callbacks": [langfuse_handler],
-            "run_name": f"turn{turn_count}: {user_input[:20]}{'…' if len(user_input) > 20 else ''}",
-            "metadata": {
-                "langfuse_session_id": session_id,
-                "langfuse_tags": ["deepagents"],
-            },
+
+    config = {
+        "callbacks": [langfuse_handler],
+        "configurable": {
+            "thread_id": session_id,
         },
-    ):
-        if msg_chunk.content:
-            print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
-            need_prefix = False
-    print()
+        "run_name": f"turn{turn_count}: {user_input[:20]}{'…' if len(user_input) > 20 else ''}",
+        "metadata": {
+            "langfuse_session_id": session_id,
+            "langfuse_tags": ["deepagents"],
+        },
+    }
+
+    try:
+        for msg_chunk, _meta in agent.stream(
+            {"messages": [("human", user_input)]},
+            stream_mode="messages",
+            config=config,
+        ):
+            if msg_chunk.content:
+                print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
+                need_prefix = False
+        print()
+    except Exception as e:
+        print(f"\n⚠️ 异常: {type(e).__name__}: {e}")
+
+    state = agent.get_state(config)
+    if state.next:
+        # 从中断信息里提取 tool 名和参数
+        for task in state.tasks:
+            for interrupt in task.interrupts:
+                action_requests = interrupt.value.get("action_requests", [])
+                for req in action_requests:
+                    tool_name = req.get("name", "未知工具")
+                    tool_args = req.get("args", {})
+                    print(f"\n⚠️ 需要确认：是否允许调用 [{tool_name}]？")
+                    print(f"   参数: {tool_args}")
+
+        # 问用户
+        user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
+
+        if user_decision == "y":
+            print("   ✅ 已批准，继续执行...")
+            # 恢复执行：approve
+            need_prefix = True
+            for msg_chunk, _meta in agent.stream(
+                Command(resume={"decisions": [{"type": "approve"}]}),
+                config=config,
+                stream_mode="messages",
+            ):
+                if msg_chunk.content:
+                    print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
+                    need_prefix = False
+            print()
+        else:
+            print("   ❌ 已拒绝")
+            # 恢复执行：reject
+            agent.invoke(Command(resume={"decisions": [{"type": "reject"}]}), config=config)

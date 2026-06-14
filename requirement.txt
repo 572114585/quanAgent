@@ -2,3 +2,4 @@ ddgs
 deepagents
 langchain-openai
 langfuse
+wecom-aibot-python-sdk
