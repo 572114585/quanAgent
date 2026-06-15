@@ -5,7 +5,9 @@ WeCom 智能机器人长连接的流式协议是「in-place replacement」：
 每次 reply_stream 都会用本次 content **整体替换** 上一帧的内容。
 所以必须自己维护 accumulated 全文，每帧把累积文本发出去。
 """
+import base64
 import logging
+import mimetypes
 import time
 from typing import Any
 
@@ -35,16 +37,87 @@ def _extract_text(chunk: Any) -> str:
     return ""
 
 
+async def _decode_wecom_image(ws_client, image_obj: dict) -> str:
+    """
+    把 WeCom image 消息体里的 {url, aeskey} 解密成 data URL。
+    SDK 的 download_file() 已经做了「下载 + AES 解密」。
+    """
+    url = image_obj.get("url")
+    aeskey = image_obj.get("aeskey")
+    if not url:
+        raise ValueError(f"image 对象缺少 url: {image_obj}")
+
+    raw_bytes, filename = await ws_client.download_file(url, aeskey)
+
+    # 用文件名猜 MIME，拿不到默认 jpeg
+    mime, _ = mimetypes.guess_type(filename or "")
+    mime = mime or "image/jpeg"
+    b64 = base64.b64encode(raw_bytes).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+async def build_user_content(ws_client, body: dict) -> str | list[dict]:
+    """
+    把 WeCom 消息 body 统一转成 LLM 的 user content：
+    - 纯文本 → str
+    - 图文混排 / 图片 → list[dict]（多模态）
+    """
+    msgtype = body.get("msgtype", "text")
+
+    # 1) 纯文本
+    if msgtype == "text":
+        return (body.get("text") or {}).get("content", "")
+
+    # 2) 图片消息
+    if msgtype == "image":
+        image_obj = body.get("image") or {}
+        try:
+            data_url = await _decode_wecom_image(ws_client, image_obj)
+        except Exception as e:
+            logger.exception("decode image failed")
+            return f"[图片解码失败: {e}]"
+        return [
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "text", "text": "请描述这张图"},
+        ]
+
+    # 3) 图文混排 (mixed)
+    if msgtype == "mixed":
+        text_part = ""
+        image_urls: list[str] = []
+        # 真实结构：body.mixed.msg_item = [ {msgtype, image/text/...}, ... ]
+        mixed_obj = body.get("mixed") or {}
+        for item in mixed_obj.get("msg_item") or []:
+            mt = item.get("msgtype")
+            if mt == "text":
+                text_part += (item.get("text") or {}).get("content", "")
+            elif mt == "image":
+                try:
+                    data_url = await _decode_wecom_image(ws_client, item.get("image") or {})
+                    image_urls.append(data_url)
+                except Exception as e:
+                    logger.exception("decode mixed image failed: %s", e)
+        if not image_urls:
+            return text_part
+        parts = [{"type": "image_url", "image_url": {"url": u}} for u in image_urls]
+        parts.append({"type": "text", "text": text_part or "请描述这张图"})
+        return parts
+
+    # 兜底：未知类型当文本处理
+    return str(body.get("text") or body)
+
+
 async def stream_agent_reply(
     ws_client,
     frame: dict,
-    user_text: str,
+    user_content: str | list[dict],
     thread_id: str,
 ) -> None:
     """
-    - frame:  SDK 收到的原始帧（reply_stream 内部用它取 req_id 做串行）
-    - user_text: 用户原始消息
-    - thread_id: LangGraph checkpointer 的 thread_id
+    - frame:        SDK 收到的原始帧（reply_stream 内部用它取 req_id 做串行）
+    - user_content: 已经是构造好的 LLM user content
+                    str → 纯文本；list[dict] → 多模态
+    - thread_id:    LangGraph checkpointer 的 thread_id
     """
     stream_id = generate_req_id("stream")
     config = {
@@ -62,7 +135,7 @@ async def stream_agent_reply(
 
     try:
         async for event in agent.astream_events(
-            {"messages": [{"role": "user", "content": user_text}]},
+            {"messages": [{"role": "user", "content": user_content}]},
             config=config,
             version="v2",
         ):

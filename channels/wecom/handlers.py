@@ -5,7 +5,7 @@ import logging
 
 from aibot import WSClient
 
-from .bridge import stream_agent_reply
+from .bridge import build_user_content, stream_agent_reply
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,36 @@ def _thread_id_for(chat_id: str | None) -> str:
 
 def _extract_chat_id(frame: dict) -> str | None:
     body = frame.get("body") or {}
+    frm = body.get("from") or {}
     return (
         body.get("chat_id")
         or body.get("chatid")
-        or (body.get("from") or {}).get("chat_id")
+        or frm.get("chat_id")
+        or frm.get("userid")     # 单聊：from.userid
+    )
+
+
+async def _dispatch(ws_client: WSClient, frame: dict) -> None:
+    """
+    通用分发：解析 body → 构造 LLM content → 调 stream_agent_reply。
+    text / image / mixed 全部走这里。
+    """
+    body = frame.get("body") or {}
+    chat_id = _extract_chat_id(frame)
+    msgtype = body.get("msgtype", "text")
+    logger.info("收到 %s 消息 chat=%s", msgtype, chat_id)
+
+    try:
+        user_content = await build_user_content(ws_client, body)
+    except Exception as e:
+        logger.exception("build_user_content failed")
+        return
+
+    if isinstance(user_content, str) and not user_content:
+        return  # 空文本直接忽略
+
+    await stream_agent_reply(
+        ws_client, frame, user_content, _thread_id_for(chat_id)
     )
 
 
@@ -35,15 +61,15 @@ def register(ws_client: WSClient) -> None:
 
     @ws_client.on("message.text")
     async def _on_text(frame):
-        body = frame.get("body") or {}
-        user_text = (body.get("text") or {}).get("content", "")
-        if not user_text:
-            return
-        chat_id = _extract_chat_id(frame)
-        logger.info("收到文本 chat=%s text=%r", chat_id, user_text)
-        await stream_agent_reply(
-            ws_client, frame, user_text, _thread_id_for(chat_id)
-        )
+        await _dispatch(ws_client, frame)
+
+    @ws_client.on("message.image")
+    async def _on_image(frame):
+        await _dispatch(ws_client, frame)
+
+    @ws_client.on("message.mixed")
+    async def _on_mixed(frame):
+        await _dispatch(ws_client, frame)
 
     @ws_client.on("event.enter_chat")
     async def _on_enter(frame):

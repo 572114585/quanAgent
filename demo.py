@@ -10,6 +10,10 @@ from langfuse.langchain import CallbackHandler
 import uuid
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
+import re
+import base64
+import mimetypes
+from urllib.request import urlopen
 
 load_dotenv()
 
@@ -38,6 +42,33 @@ session_id = str(uuid.uuid4())
 turn_count = 0
 langfuse_handler = CallbackHandler()
 
+# === 多模态支持：把图片 URL 转成 OpenAI 格式 ===
+IMAGE_URL_RE = re.compile(
+    r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:\?[^\s]*)?',
+    re.IGNORECASE,
+)
+
+def to_image_part(url: str) -> dict:
+    """把图片引用转成 OpenAI image_url part。HTTP URL 先下载再 base64。"""
+    if url.startswith("data:"):
+        return {"type": "image_url", "image_url": {"url": url}}
+    if url.startswith(("http://", "https://")):
+        data = urlopen(url, timeout=10).read()
+        mime, _ = mimetypes.guess_type(url)
+        mime = mime or "image/jpeg"
+        b64 = base64.b64encode(data).decode("ascii")
+        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+    raise ValueError(f"不支持的图片引用: {url}")
+
+def build_user_content(text: str, image_urls: list[str]) -> str | list[dict]:
+    """没图 → 返回字符串；    有图 → 返回 list[dict] 多模态 content。"""
+    if not image_urls:
+        return text
+    parts = [to_image_part(u) for u in image_urls]
+    parts.append({"type": "text", "text": text})
+    return parts
+# =============================================
+
 while True:
     user_input = input("\n👤 你: ")
     if user_input.lower() == "exit":
@@ -60,8 +91,18 @@ while True:
     }
 
     try:
+        # === 多模态：扫消息里的图片 URL ===
+        image_urls = IMAGE_URL_RE.findall(user_input)
+        text = IMAGE_URL_RE.sub('', user_input).strip() or "请描述这张图"
+        try:
+            user_content = build_user_content(text, image_urls)
+        except Exception as e:
+            print(f"\n⚠️ 加载图片失败: {e}")
+            user_content = text
+        # ===================================
+
         for msg_chunk, _meta in agent.stream(
-            {"messages": [("human", user_input)]},
+            {"messages": [{"role": "user", "content": user_content}]},
             stream_mode="messages",
             config=config,
         ):
