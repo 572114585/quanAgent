@@ -8,6 +8,7 @@ from time_tools import get_current_time
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 import uuid
+from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 import re
@@ -106,7 +107,7 @@ while True:
             stream_mode="messages",
             config=config,
         ):
-            if msg_chunk.content:
+            if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
                 print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
                 need_prefix = False
         print()
@@ -115,33 +116,38 @@ while True:
 
     state = agent.get_state(config)
     if state.next:
-        # 从中断信息里提取 tool 名和参数
+        # 从中断信息里提取所有 action_requests
+        all_action_requests = []
         for task in state.tasks:
             for interrupt in task.interrupts:
                 action_requests = interrupt.value.get("action_requests", [])
-                for req in action_requests:
-                    tool_name = req.get("name", "未知工具")
-                    tool_args = req.get("args", {})
-                    print(f"\n⚠️ 需要确认：是否允许调用 [{tool_name}]？")
-                    print(f"   参数: {tool_args}")
+                all_action_requests.extend(action_requests)
 
-        # 问用户
-        user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
+        if all_action_requests:
+            # 逐个确认每个工具调用
+            decisions = []
+            for i, req in enumerate(all_action_requests, 1):
+                tool_name = req.get("name", "未知工具")
+                tool_args = req.get("args", {})
+                print(f"\n⚠️ [{i}/{len(all_action_requests)}] 需要确认：是否允许调用 [{tool_name}]？")
+                print(f"   参数: {tool_args}")
 
-        if user_decision == "y":
-            print("   ✅ 已批准，继续执行...")
-            # 恢复执行：approve
+                user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
+                if user_decision == "y":
+                    print("   ✅ 已批准")
+                    decisions.append({"type": "approve"})
+                else:
+                    print("   ❌ 已拒绝")
+                    decisions.append({"type": "reject"})
+
+            # 恢复执行：传入所有 decisions
             need_prefix = True
             for msg_chunk, _meta in agent.stream(
-                Command(resume={"decisions": [{"type": "approve"}]}),
+                Command(resume={"decisions": decisions}),
                 config=config,
                 stream_mode="messages",
             ):
-                if msg_chunk.content:
+                if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
                     print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
                     need_prefix = False
             print()
-        else:
-            print("   ❌ 已拒绝")
-            # 恢复执行：reject
-            agent.invoke(Command(resume={"decisions": [{"type": "reject"}]}), config=config)

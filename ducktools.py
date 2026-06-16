@@ -6,7 +6,7 @@ def web_search(query: str,max_results: int=5) -> str:
     """用duckduckgo工具来进行搜搜query，返回前max_results个结果中的标题、链接和摘要"""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query,max_results=max_results))
+            results = list(ddgs.text(query, max_results=max_results, safesearch="on"))
             
         if not results:
             return "没有找到相关结果"
