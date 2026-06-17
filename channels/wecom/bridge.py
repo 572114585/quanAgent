@@ -122,6 +122,7 @@ async def stream_agent_reply(
     stream_id = generate_req_id("stream")
     config = {
         "configurable": {"thread_id": thread_id},
+        "recursion_limit": 100,
         # "callbacks": [langfuse_handler],  # 需要时打开
     }
 

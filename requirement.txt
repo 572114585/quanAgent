@@ -3,3 +3,7 @@ deepagents
 langchain-openai
 langfuse
 wecom-aibot-python-sdk
+httpx
+qrcode
+pycryptodome
+python-dotenv
