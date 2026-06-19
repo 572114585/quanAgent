@@ -7,3 +7,6 @@ httpx
 qrcode
 pycryptodome
 python-dotenv
+openpyxl
+python-docx
+pandas
