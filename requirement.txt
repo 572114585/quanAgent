@@ -10,3 +10,5 @@ python-dotenv
 openpyxl
 python-docx
 pandas
+Pillow
+PyPDF2

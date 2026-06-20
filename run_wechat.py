@@ -26,6 +26,8 @@ from channels.wechat.monitor import Monitor
 from channels.wechat.sender import Sender
 from channels.wechat.bridge import handle_message
 from channels.wechat.session import SessionStore
+from channels.wechat.media import init_media
+from channels.wechat.config import WechatConfig
 
 
 def cmd_list() -> None:
@@ -68,6 +70,10 @@ def cmd_remove(account_id: str) -> None:
 
 async def run_single_account(account, sessions: SessionStore) -> None:
     """为单个账号启动监听"""
+    # 初始化媒体模块
+    wechat_config = WechatConfig.from_env()
+    init_media(wechat_config.media)
+
     api = WeChatApi(account.bot_token, account.base_url)
     sender = Sender(api, account.account_id)
     account_sessions = SessionStore(account_id=account.account_id)

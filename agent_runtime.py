@@ -120,7 +120,7 @@ _REJECTION_EXIT_CODE = 126
 _SHELL_DENIED_MARKER = "[E_SHELL_DENIED]"
 # 写操作唯一允许的子树（相对 root_dir）：模型产出只能落这里。
 # skills/ 子树完全只读，保护脚本不被模型自写文件污染。
-_WRITE_ALLOWED_SUBDIRS: tuple[str, ...] = ("output",)
+_WRITE_ALLOWED_SUBDIRS: tuple[str, ...] = ("output", "tmp")
 # skills 子树名（写保护边界）。
 _SKILLS_SUBDIR = "skills"
 # skills 脚本的 glob 模式（相对 root_dir），用于构建 execute 脚本白名单。
@@ -961,7 +961,16 @@ def create_llm():
 
 llm = create_llm()
 
-SYSTEM_PROMPT = "你是权哥的助手，你叫做小权，你的任务是帮助权哥完成各种任务。"
+SYSTEM_PROMPT = """你是权哥的助手，你叫做小权，你的任务是帮助权哥完成各种任务。
+
+## 文件输出目录约定（必须遵守）
+- **最终交付给用户的产物**（文档、表格、图片、导出文件等）一律写到 `output/` 目录。只有 `output/` 下的文件会被自动发送给用户。
+- **中间过程文件**（临时草稿、下载的素材、调试输出、中间计算结果）一律写到 `tmp/` 目录。`tmp/` 下的文件不会发给用户，仅用于你自己的中间处理。
+- 绝对不要把中间文件混进 `output/`，也不要把最终产物写到 `tmp/`。"""
+
+# 确保 workspace 子目录存在
+Path("workspace/tmp").mkdir(parents=True, exist_ok=True)
+Path("workspace/output").mkdir(parents=True, exist_ok=True)
 
 # 组装 backend：外层白名单 + 内层路径改写/编码。
 _inner_backend = _SkillsShellBackend(root_dir="workspace", virtual_mode=True)

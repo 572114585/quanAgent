@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .sender import Sender
 from .session import SessionStore
+from .media import get_media_storage
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +13,11 @@ HELP_TEXT = """📋 可用命令：
 /clear - 清除当前会话，开始新对话
 /status - 查看当前会话状态
 /reset - 完全重置（包括会话等设置）
+/media - 查看媒体存储统计
+/cleanup - 清理过期的媒体临时文件
 
-直接发消息即可与 AI 对话，无需加命令前缀。"""
+直接发消息即可与 AI 对话，无需加命令前缀。
+支持发送图片、语音、文件和视频，AI 会自动处理。"""
 
 
 @dataclass
@@ -54,6 +58,24 @@ def route_command(
     if cmd == "/reset":
         new_thread = sessions.reset(user_id)
         return CommandResult(handled=True, response="✅ 已完全重置")
+
+    if cmd == "/media":
+        storage = get_media_storage()
+        stats = storage.get_storage_stats()
+        lines = ["📊 媒体存储统计："]
+        for category, info in stats.items():
+            if category == "total":
+                lines.append(f"\n总计: {info['count']} 个文件，{info['size_mb']} MB")
+            else:
+                lines.append(f"  {category}: {info['count']} 个文件，{info['size_mb']} MB")
+        return CommandResult(handled=True, response="\n".join(lines))
+
+    if cmd == "/cleanup":
+        storage = get_media_storage()
+        cleaned = storage.cleanup_expired()
+        if cleaned:
+            return CommandResult(handled=True, response=f"✅ 已清理 {cleaned} 个过期媒体文件")
+        return CommandResult(handled=True, response="✅ 没有需要清理的过期文件")
 
     # 未知命令
     return CommandResult(

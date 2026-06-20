@@ -60,6 +60,18 @@ class VoiceItem:
 
 
 @dataclass
+class VideoItem:
+    url: str = ""
+    aeskey: str = ""
+    encrypt_query_param: str = ""
+    aes_key: str = ""
+    encrypt_type: int = 0
+    duration: int = 0       # 视频时长（秒）
+    width: int = 0          # 视频宽度
+    height: int = 0         # 视频高度
+
+
+@dataclass
 class FileItem:
     file_name: str = ""
     len: str = "0"
@@ -75,6 +87,7 @@ class MessageItem:
     image_item: ImageItem = field(default_factory=ImageItem)
     voice_item: VoiceItem = field(default_factory=VoiceItem)
     file_item: FileItem = field(default_factory=FileItem)
+    video_item: VideoItem = field(default_factory=VideoItem)
 
 
 @dataclass
@@ -117,12 +130,20 @@ def parse_message(raw: dict) -> WeixinMessage:
             file_raw.setdefault("aes_key", file_media.get("aes_key", ""))
             file_raw.setdefault("encrypt_type", file_media.get("encrypt_type", 0))
         file_item = FileItem(**{k: v for k, v in file_raw.items() if hasattr(FileItem, k)})
+        video_raw = raw_item.get("video_item") or {}
+        video_media = video_raw.pop("media", {}) if isinstance(video_raw, dict) else {}
+        if video_media:
+            video_raw.setdefault("encrypt_query_param", video_media.get("encrypt_query_param", ""))
+            video_raw.setdefault("aes_key", video_media.get("aes_key", ""))
+            video_raw.setdefault("encrypt_type", video_media.get("encrypt_type", 0))
+        video_item = VideoItem(**{k: v for k, v in video_raw.items() if hasattr(VideoItem, k)})
         items.append(MessageItem(
             type=item_type,
             text_item=text_item,
             image_item=image_item,
             voice_item=voice_item,
             file_item=file_item,
+            video_item=video_item,
         ))
 
     return WeixinMessage(

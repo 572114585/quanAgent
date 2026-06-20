@@ -1,4 +1,4 @@
-"""消息发送器：文本/图片/文件消息 + "正在输入"状态"""
+"""消息发送器：文本/图片/文件/视频消息 + "正在输入"状态"""
 import asyncio
 import base64
 import logging
@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Callable
 
 from .api import WeChatApi
-from .media import upload_file, is_image_file
-from .types import MessageType, MessageState, MessageItemType, TypingStatus
+from .media import upload_file, is_image_file, is_video_file
+from .types import MessageType, MessageState, MessageItemType, TypingStatus, UploadMediaType
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +166,17 @@ class Sender:
                     "mid_size": media["file_size"],
                 },
             }
+        elif media["media_type"] == "video":
+            item = {
+                "type": MessageItemType.VIDEO,
+                "video_item": {
+                    "media": {
+                        "encrypt_query_param": media["encrypt_query_param"],
+                        "aes_key": aes_key_base64,
+                        "encrypt_type": 1,
+                    },
+                },
+            }
         else:
             item = {
                 "type": MessageItemType.FILE,
@@ -192,3 +203,11 @@ class Sender:
         logger.info("Sending file to %s: %s", to_user_id, media["file_name"])
         await self._api.send_message(msg)
         logger.info("File sent to %s: %s", to_user_id, media["file_name"])
+
+    async def send_media(self, to_user_id: str, context_token: str, file_path: str) -> None:
+        """智能发送媒体文件：根据文件扩展名自动选择发送方式
+
+        send_file 已能根据上传返回的 media_type 正确处理图片/视频/文件，
+        无需按扩展名分流。
+        """
+        await self.send_file(to_user_id, context_token, file_path)
