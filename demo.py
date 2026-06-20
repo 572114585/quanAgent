@@ -1,11 +1,7 @@
 from deepagents import create_deep_agent
-from deepagents.backends import LocalShellBackend
 import os
 import logging
-from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
-from ducktools import web_search
-from time_tools import get_current_time
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 import uuid
@@ -17,7 +13,7 @@ import base64
 import mimetypes
 from urllib.request import urlopen
 
-from agent_runtime import create_llm
+from agent_runtime import create_llm, backend, web_search, get_current_time
 
 load_dotenv()
 
@@ -32,17 +28,11 @@ llm = create_llm()
 
 system_prompt = "你是权哥的助手，你叫做小权，你的任务是帮助权哥完成各种任务。"
 
-filebackend = LocalShellBackend(
-    root_dir="workspace",
-    virtual_mode=True,
-    inherit_env=True,
-)
-
 langfuse = get_client()
 agent = create_deep_agent(
     model=llm,
     system_prompt=system_prompt,
-    backend=filebackend,
+    backend=backend,
     tools=[web_search,get_current_time],
     interrupt_on={"web_search": True},
     checkpointer=MemorySaver(),
