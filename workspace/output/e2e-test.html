@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E2E Render Test</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+:root {
+  --primary: oklch(0.62 0.19 255);
+  --primary-light: oklch(0.78 0.13 255);
+  --bg: oklch(0.15 0.02 260);
+  --surface: oklch(0.21 0.02 260);
+  --border: oklch(0.30 0.02 260);
+  --text: oklch(0.96 0.005 260);
+  --muted: oklch(0.70 0.01 260);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Space Grotesk', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.hero { padding: 96px 64px; max-width: 1200px; }
+.hero h1 {
+  font-size: 88px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  margin-bottom: 24px;
+}
+.hero h1 span {
+  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero p { font-size: 22px; color: var(--muted); max-width: 620px; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding: 0 64px 96px; max-width: 1200px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.card:hover { transform: translateY(-4px); border-color: var(--primary); }
+.card .num { font-family: 'JetBrains Mono', monospace; color: var(--primary); font-size: 14px; margin-bottom: 16px; }
+.card h3 { font-size: 24px; margin-bottom: 12px; }
+.card p { color: var(--muted); font-size: 15px; line-height: 1.6; }
+.tag { display: inline-block; padding: 6px 14px; border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted); margin-bottom: 32px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+const features = [
+  { num: '01', title: 'oklch 色彩', desc: '感知均匀的色彩空间，相同亮度看起来确实一样亮。' },
+  { num: '02', title: 'Space Grotesk', desc: '非默认字体，避免 AI 生成的 Inter + 蓝按钮俗套。' },
+  { num: '03', title: 'React + Babel', desc: '内联 JSX，skill 产物的典型技术栈，需浏览器执行。' },
+];
+function App() {
+  const [count, setCount] = useState(0);
+  return (
+    <React.Fragment>
+      <section className="hero">
+        <span className="tag">render_html E2E test</span>
+        <h1>设计可以<br/><span>被看见</span></h1>
+        <p>这个页面用 React 渲染、oklch 配色、Google Fonts 加载——正是 web-design-engineer skill 的典型产物。如果截图能忠实呈现，说明渲染链路打通。</p>
+      </section>
+      <section className="grid">
+        {features.map(f => (
+          <div className="card" key={f.num}>
+            <div className="num">{f.num}</div>
+            <h3>{f.title}</h3>
+            <p>{f.desc}</p>
+          </div>
+        ))}
+      </section>
+    </React.Fragment>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

@@ -29,6 +29,7 @@ from deepagents.backends.protocol import (
 )
 
 from ducktools import web_search
+from html_tools import render_html
 from time_tools import get_current_time
 
 load_dotenv()
@@ -981,7 +982,7 @@ agent = create_deep_agent(
     model=llm,
     system_prompt=SYSTEM_PROMPT,
     backend=backend,
-    tools=[web_search, get_current_time],
+    tools=[web_search, get_current_time, render_html],
     checkpointer=MemorySaver(),
     skills=["skills/"],
 )

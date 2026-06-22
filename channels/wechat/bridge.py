@@ -263,6 +263,12 @@ async def handle_message(
         artifacts = _diff_artifacts(before, _snapshot(_OUTPUT_DIR))
         if artifacts:
             logger.info("Detected %d artifact(s) in output/", len(artifacts))
+        # 发送顺序：图片（PNG/JPG 等）优先，HTML 等其他文件在后。
+        # 原因：图片在微信里即时内联显示，让用户立刻看到设计效果；HTML 走文件
+        # 下载，是供用户后续在浏览器里交互的源文件。先看图、再拿源文件，体验更顺。
+        # 同级内仍按 mtime 升序（先改的先发），保持稳定可观察。
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+        artifacts.sort(key=lambda p: (0 if p.suffix.lower() in _IMAGE_EXTS else 1, p.stat().st_mtime))
         for path in artifacts:
             try:
                 await sender.send_file(user_id, context_token, str(path))
