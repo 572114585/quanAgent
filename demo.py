@@ -34,7 +34,7 @@ agent = create_deep_agent(
     system_prompt=system_prompt,
     backend=backend,
     tools=[web_search,get_current_time],
-    interrupt_on={"web_search": True},
+    interrupt_on={"web_search": True, "execute": True},
     checkpointer=MemorySaver(),
     skills=["skills/"],
 )

@@ -1,0 +1,33 @@
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# build
+dist
+dist-ssr
+*.local
+.vite
+.tauri
+
+# tauri
+src-tauri/target
+src-tauri/Cargo.lock
+src-tauri/gen
+
+# editor / OS
+.idea
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+Thumbs.db
+
+# env
+.env
+.env.local
+.env.*.local

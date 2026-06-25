@@ -1,12 +1,41 @@
 ---
 name: web-video-presentation
 description: 把一篇文章或口播稿，做成"看起来像视频"的点击驱动 16:9 网页演示，可选合成口播音频。流程：原始文章 → **一次产出**口播稿 + outline 开发计划 → 用户**一次对齐** 5 件事（稿子 / outline / 主题 / 素材 / 开发模式）→ 网页开发（逐章 / 顺序 / 并行）→ 可选音频合成（provider-agnostic：内置 MiniMax mmx-cli + OpenAI TTS，可换 ElevenLabs / edge-tts / Azure / 自带 TTS）。**outline 只规划节奏与信息密度，不规划动画** —— 动画由章节开发时按 PRINCIPLES + ANTI-AI 法则即时设计。每次点击推进口播稿的一个节拍，每一步独占整屏，进度条平时隐藏只在悬浮时出现。适用场景：用网页做视频（动态 PPT 但不像 PPT）、把口播稿 / 文章变成可交互的解说、为 B 站 / YouTube / 视频号录屏教程、做有电影感的产品 / talk demo。本 Skill 沉淀的是设计方法论 + 协作流程 —— 不绑定任何特定样式 / 字体 / 颜色 —— 因此能复用到任意主题与美学。
+allowed-tools: execute read_file write_file edit_file render_html
 ---
 
 # Web Video Presentation
 
 把一篇文章或口播稿，一步步做成可录屏的"伪装成视频的网页"，可选合成
 口播音频。产出物 = Vite + React + TS 项目 + 按章节切分的音频。
+
+## 渠道适配说明（重要）
+
+本 Skill 的 Checkpoint Plan 和 Checkpoint Audio 是"硬节点"——必须停下来
+等用户确认。但不同渠道的 HITL 能力不同，**必须按渠道选择正确的实现方式**：
+
+### CLI 渠道（demo.py）
+- 使用 `interrupt_on` 硬停，用户在终端逐个 y/n 确认工具调用。
+- scaffold.sh / npm run dev / synthesize-audio.sh 等关键 execute 调用前
+  会自动停下，用户看到命令后批准或拒绝。
+- **直接按 SKILL.md 原文流程走**，无需额外适配。
+
+### 微信 / 企业微信渠道（run_wechat.py / run_wecom.py）
+- **绝对不能使用 interrupt_on**（WeCom 没有 stdin，会卡死）。
+- 改为**软 Checkpoint**：agent 把确认内容作为本轮回复发出，自然结束对话。
+  用户在下一轮消息中给出反馈，agent 继续推进。
+- 具体做法：
+  1. Phase 1.2 写完 script.md + outline.md 后，**不立即执行 scaffold**，
+     先输出"内容计划写完，请确认 5 件事..."并停笔。
+  2. 用户回复确认后，下一轮消息才执行 Phase 2.1 scaffold。
+  3. Checkpoint Audio 同理：做完网页后汇报"是否合成音频"，等用户下一轮消息。
+  4. 第 1 章验收：做完后用 `render_html` 截图发给用户，等用户下一轮消息确认。
+
+### 预览交付
+- 微信/企业微信渠道无法打开 localhost，用 `render_html` 工具对 dev server URL
+  截图，PNG 自动落入 output/ 会被投递给用户。
+- 也可用 `render_html` 的 `steps` 参数截取关键步数的截图。
+- 完成后可用 `zip -r output/<项目名>.zip tmp/presentations/<项目名>` 打包源码交付。
 
 ## 适用场景
 
@@ -48,10 +77,10 @@ Phase 3   音频合成（可选）
 Phase 4   录屏 + 后期
 ```
 
-工作目录约定（agent 在用户当前目录下创建 / 编辑）：
+工作目录约定（agent 在 workspace 下创建 / 编辑）：
 
 ```
-my-video/
+tmp/presentations/<project-id>/
 ├── article.md          # 用户给原文时必有 —— 不删！开发阶段画面信息源
 ├── script.md           # 必有：保持原文语言的平台化口播稿（决定节拍）
 ├── outline.md          # 必有：开发计划（章节切分 + 每步内容 + 信息池）
@@ -70,6 +99,33 @@ my-video/
     ├── audio-segments.json         # extract 产出（合成前 review）
     └── public/audio/<id>/<N>.mp3   # 可选：合成的音频
 ```
+
+> **为什么放在 `tmp/presentations/` 而非 `output/`？**
+> Vite 工程含 `node_modules/`（GB 级）和大量源码文件，不适合落入 `output/`
+> （output/ 的文件会被自动投递给用户，且不应含中间构建产物）。
+> 最终交付时用 `zip` 打包源码到 `output/<项目名>.zip`，截图预览到 `output/preview/`。
+
+## 本环境（agent_runtime）适配约定
+
+在本环境下集成时，所有命令和路径遵循以下约定（覆盖上文默认路径）：
+
+1. **Vite 工程根**：`tmp/presentations/<project-id>/`（不是 `./presentation`）。
+   scaffold 命令改为：
+   ```bash
+   bash skills/web-video-presentation/scripts/scaffold.sh tmp/presentations/<project-id>/presentation --theme=<theme-id>
+   ```
+
+2. **dev server 端口**：固定 5174（vite.config.ts 默认）。
+
+3. **预览交付**：
+   - 调用 `render_html(html_path="http://localhost:5174", steps=[0,2,4,...])` 截关键 step → 落 `output/preview/`（微信渠道自动投递 PNG）
+   - 工程打 zip 到 `output/<project-id>-source.zip`（用户下载到本机 `npm install && npm run dev` 录屏）
+
+4. **音频合成**：用 OpenAI provider（`PRESENTATION_TTS=openai npm run synthesize-audio`），凭证由环境注入。
+
+5. **Checkpoint**：
+   - CLI 渠道：execute 会自动 y/n 确认
+   - 微信/企业微信渠道：见上文「渠道适配说明」，用自然语言汇报+等下轮消息
 
 > **关键**：`narrations.ts` 是 step 数和音频合成的**唯一真相源**。
 > 章节 `.tsx` 里的 `if (step === N)` 出现的最大 N + 1 必须等于
@@ -236,11 +292,11 @@ Phase 2.4 的"实现单章"会重复 N 次 —— 每次都要回看核心约束
 ### 2.1 脚手架
 
 ```bash
-bash <path-to-web-video-presentation>/scripts/scaffold.sh \
-  ./presentation \
+bash skills/web-video-presentation/scripts/scaffold.sh \
+  tmp/presentations/<project-id>/presentation \
   --theme=<用户选的主题 id>
 
-bash <path-to-web-video-presentation>/scripts/scaffold.sh --list-themes
+bash skills/web-video-presentation/scripts/scaffold.sh --list-themes
 ```
 
 > 自定义主题 → 先按 [`references/THEMES.md`](references/THEMES.md)
@@ -249,10 +305,10 @@ bash <path-to-web-video-presentation>/scripts/scaffold.sh --list-themes
 脚手架带一个 `01-example` demo。在写第一章真实内容前**删掉**：
 
 ```bash
-rm -rf presentation/src/chapters/01-example
+rm -rf tmp/presentations/<project-id>/presentation/src/chapters/01-example
 ```
 
-并把 `presentation/src/registry/chapters.ts` 里 `EXAMPLE_CHAPTER`
+并把 `tmp/presentations/<project-id>/presentation/src/registry/chapters.ts` 里 `EXAMPLE_CHAPTER`
 的 import 和数组项移除。
 
 ### 2.2 第 1 章 —— 主线程 + 强制验收
@@ -273,6 +329,7 @@ rm -rf presentation/src/chapters/01-example
 
 ```
 第 1 章 <id> 做完了，dev server 在 localhost:5173 运行。
+（微信/企业微信渠道：用 render_html 截图发给你看）
 
 验收重点：
   □ 视觉气质对不对？符合 <theme nameZh> 的预期吗？
@@ -345,7 +402,7 @@ rm -rf presentation/src/chapters/01-example
 ### 2.5 大改后 bump STORAGE_KEY
 
 改动 `chapters.ts`（增加 / 删除 / 重排章节，或某章 `narrations.ts`
-长度变化）后，**bump** `presentation/src/hooks/useStepper.ts` 的
+长度变化）后，**bump** `tmp/presentations/<project-id>/presentation/src/hooks/useStepper.ts` 的
 `STORAGE_KEY`（如 `v4` → `v5`），避免持久化游标落到不存在的 step 上。
 
 ---
@@ -378,7 +435,7 @@ Phase 2 结束后必须停下来，问用户：
 详细流程见 [`references/AUDIO.md`](references/AUDIO.md)。简版：
 
 ```bash
-cd presentation
+cd tmp/presentations/<project-id>/presentation
 npm run extract-narrations   # 扫所有 narrations.ts → audio-segments.json
 # 让用户扫一眼 audio-segments.json 确认文本对
 npm run synthesize-audio                       # 默认 minimax provider，增量

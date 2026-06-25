@@ -89,11 +89,16 @@ DEFAULT_ALLOWED_COMMANDS: frozenset[str] = frozenset(
 _COMMAND_SUBSTITUTION_PATTERN = re.compile(r"`|\$\(")
 # python 危险选项：-c（内联代码）、-m（模块）、-（stdin）。
 _PYTHON_BLOCKED_OPTIONS = frozenset({"-c", "-m", "-"})
+# bash/sh 危险选项：-c（内联代码）、-s（从 stdin 执行）、-（stdin）。
+# 与 _PYTHON_BLOCKED_OPTIONS 同理，阻止内联代码绕过脚本白名单。
+_BASH_BLOCKED_OPTIONS = frozenset({"-c", "-s", "-"})
 # 引号外的链式命令分隔符。
 _CHAIN_SEPARATORS: frozenset[str] = frozenset({"&&", "||", ";", "|", "&", "\n"})
 # 命令中显式指定 cwd 的常见模式：cd /xxx、pushd /xxx、chdir /xxx。
 _CD_PATTERN = re.compile(r"\b(?:cd|pushd|chdir)\s+(?P<target>[^\s;&|]+)")
 # 子进程环境白名单：只放行这些键（其余不继承），再强制 UTF-8。
+# 业务键（OPENAI_*）为 web-video-presentation 的 TTS 子进程保留；
+# HOME/USERPROFILE 是 npm 解析 .npmrc / 缓存目录所需。
 _SAFE_SUBPROCESS_ENV_KEYS: tuple[str, ...] = (
     "PATH",
     "SystemRoot",
@@ -102,6 +107,21 @@ _SAFE_SUBPROCESS_ENV_KEYS: tuple[str, ...] = (
     "PATHEXT",
     "TEMP",
     "TMP",
+    "HOME",
+    "USERPROFILE",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_TTS_MODEL",
+)
+# Node 构建链命令：web-video-presentation 等 Node skill 需要。
+# 不并入 DEFAULT_ALLOWED_COMMANDS（保持默认收紧），由调用方按需合并传入。
+_NODE_BUILD_COMMANDS: frozenset[str] = frozenset(
+    {"npm", "npx", "node", "bash", "sh", "jq", "curl", "zip"}
+)
+# curl 出网 host 白名单：只放行 OpenAI TTS API（web-video-presentation 内置 provider）。
+# 其它 host 一律拒，避免 curl 成为通用出网口子。新增 TTS 后端时在此追加。
+_CURL_ALLOWED_HOSTS: frozenset[str] = frozenset(
+    {"api.openai.com"}
 )
 # 标记"输出路径"的参数名：下一个 token 必定是路径，强制改写。
 _PATH_VALUE_FLAGS: frozenset[str] = frozenset(
@@ -270,6 +290,118 @@ def _extract_python_positional(segment: str) -> str | None:
     return None
 
 
+# bash/sh 的选项语义比 python 简单：
+# - 带值选项极少（-O <level>），且 web-video 的 scaffold.sh 等不使用；
+# - 绝大多数是开关位（-e/-u/-x/-l 等 set -euo pipefail 风格）；
+# - -- 是选项终止符，其后第一个 token 必为脚本路径。
+# 因此保守策略：所有 - 开头 token 当选项跳过，遇 -- 终止扫描。
+# 内联代码风险（-c/-s）在 _reject_if_disallowed 里单独拦截，这里只负责提取路径。
+def _extract_bash_positional(segment: str) -> str | None:
+    """从 `bash [opts] script.sh [args]` 段提取第一个位置参数（脚本路径）。
+
+    跳过 bash 开关选项（-e/-u/-x/-l 等），遇到 -- 终止选项扫描。
+    返回脚本 token 原样字符串（含引号则剥掉），无位置参数（如 `bash -c '...'`）返回 None。
+    注意：-c/-s 的拦截在调用方 _reject_if_disallowed 做完，能走到这里的命令都不含 -c/-s。
+    """
+    tokens = _split_segment_tokens(segment)
+    tokens = _tokens_after_env_assignments(tokens)
+    if not tokens:
+        return None
+    # tokens[0] 是 bash/sh，从 [1:] 开始扫选项。
+    i = 1
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        # -- 是选项终止符：其后第一个 token 必为脚本路径
+        if tok == "--":
+            i += 1
+            if i < n:
+                tok = tokens[i]
+                if len(tok) >= 2 and tok[0] in ('"', "'") and tok[-1] == tok[0]:
+                    return tok[1:-1]
+                return tok
+            return None
+        # 任何 - 开头都当选项跳过（保守：宁可误判选项也不误判成脚本）
+        if tok.startswith("-"):
+            i += 1
+            continue
+        # 第一个非选项 token = 脚本路径，剥外层引号
+        if len(tok) >= 2 and tok[0] in ('"', "'") and tok[-1] == tok[0]:
+            return tok[1:-1]
+        return tok
+    return None
+
+
+def _extract_curl_urls(segment: str) -> list[str]:
+    """从 `curl [opts] <url> [url...]` 段提取所有 URL 位置参数。
+
+    curl 的位置参数（不以 - 开头的 token，或 -- 之后的 token）即 URL。
+    带值选项（-o/-d/-H/-X/-A 等）的下一个 token 是值不是 URL，要跳过。
+    返回 URL token 原样字符串（剥外层引号），用于后续 host 白名单校验。
+    """
+    # curl 常见带值选项（下一个 token 是值，不是 URL）。
+    # 覆盖 web-video openai.sh 用到的 -o/-d/-H/-X，以及其它常见 -A/-e/-u/-b/-c。
+    curl_value_options = frozenset({
+        "-o", "--output", "-d", "--data", "--data-raw", "--data-binary",
+        "-H", "--header", "-X", "--request", "-A", "--user-agent",
+        "-e", "--referer", "-u", "--user", "-b", "--cookie", "-c",
+        "--cookie-jar", "-K", "--config", "--resolve", "--connect-to",
+        "-w", "--write-out", "-m", "--max-time", "--retry",
+    })
+    tokens = _split_segment_tokens(segment)
+    tokens = _tokens_after_env_assignments(tokens)
+    urls: list[str] = []
+    i = 1  # tokens[0] 是 curl
+    n = len(tokens)
+    after_double_dash = False
+    while i < n:
+        tok = tokens[i]
+        if after_double_dash:
+            stripped = tok[1:-1] if len(tok) >= 2 and tok[0] in ('"', "'") and tok[-1] == tok[0] else tok
+            urls.append(stripped)
+            i += 1
+            continue
+        if tok == "--":
+            after_double_dash = True
+            i += 1
+            continue
+        if tok in curl_value_options:
+            i += 2  # 跳过选项和它的值
+            continue
+        # 形如 --opt=value 的长选项：单 token，跳过
+        if tok.startswith("--") and "=" in tok:
+            i += 1
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        # 位置参数 = URL
+        stripped = tok[1:-1] if len(tok) >= 2 and tok[0] in ('"', "'") and tok[-1] == tok[0] else tok
+        urls.append(stripped)
+        i += 1
+    return urls
+
+
+def _curl_urls_allowed(urls: list[str]) -> tuple[bool, str | None]:
+    """校验 curl 的所有 URL 是否都命中 host 白名单。
+
+    返回 (是否放行, 第一个被拒的 URL)。空 URL 列表视为放行（curl 不发请求）。
+    解析 URL 用 urllib，兼容 http/https，host 大小写不敏感比对。
+    """
+    if not urls:
+        return True, None
+    from urllib.parse import urlsplit
+
+    for url in urls:
+        try:
+            host = urlsplit(url).hostname or ""
+        except ValueError:
+            return False, url
+        if host.lower() not in _CURL_ALLOWED_HOSTS:
+            return False, url
+    return True, None
+
+
 def _build_default_allow_pattern(commands: Iterable[str]) -> re.Pattern[str]:
     alternatives = "|".join(re.escape(cmd) for cmd in sorted(set(commands)))
     if not alternatives:
@@ -278,21 +410,26 @@ def _build_default_allow_pattern(commands: Iterable[str]) -> re.Pattern[str]:
 
 
 def _discover_skill_scripts(root: Path) -> frozenset[str]:
-    """启动时 glob `<root>/skills/*/scripts/*.py`，返回相对 root 的 POSIX 路径集合。
+    """启动时 glob `<root>/skills/*/scripts/*.{py,sh}`，返回相对 root 的 POSIX 路径集合。
 
     这是 execute 脚本白名单的来源——deepagents 无 skills 脚本注册表，必须自己扫。
     每次启动重新扫，所以新增 skill 脚本重启即生效（无需改代码）。
+
+    同时扫 .py 和 .sh：
+    - .py：word-docx / excel-xlsx 等现有 skill 的脚本。
+    - .sh：web-video-presentation 的 scaffold.sh / synthesize-audio.sh / pack.sh 等。
     """
     scripts_dir = root / _SKILLS_SUBDIR
     if not scripts_dir.is_dir():
         return frozenset()
     found: set[str] = set()
-    for p in scripts_dir.glob("*/scripts/*.py"):
-        try:
-            rel = p.resolve().relative_to(root.resolve())
-            found.add(_to_posix(str(rel)))
-        except (ValueError, OSError):
-            continue
+    for pattern in ("*/scripts/*.py", "*/scripts/*.sh"):
+        for p in scripts_dir.glob(pattern):
+            try:
+                rel = p.resolve().relative_to(root.resolve())
+                found.add(_to_posix(str(rel)))
+            except (ValueError, OSError):
+                continue
     return frozenset(found)
 
 
@@ -544,6 +681,32 @@ def _build_skill_subprocess_env() -> dict[str, str]:
             env[key] = value
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    # 确保 Node.js 在 PATH 中：扫描常见安装路径，找到就追加。
+    # agent_runtime 的子进程可能继承不到系统 PATH 里的 node，
+    # 尤其在虚拟环境 / IDE 内嵌终端下。
+    _node_candidates = [
+        r"D:\nodejs",                              # 本机实际安装路径
+        r"C:\Program Files\nodejs",                # 默认安装路径
+        os.path.expanduser(r"~\AppData\Roaming\nvm\v*"),  # nvm-windows
+    ]
+    existing_path = env.get("PATH", "")
+    existing_dirs = set(existing_path.split(os.pathsep))
+    for candidate in _node_candidates:
+        # 支持 glob 模式（nvm 路径含版本号）
+        if "*" in candidate:
+            import glob as _glob
+            matches = sorted(_glob.glob(candidate), reverse=True)
+            for m in matches:
+                node_exe = os.path.join(m, "node.exe")
+                if os.path.isfile(node_exe) and m not in existing_dirs:
+                    existing_dirs.add(m)
+                    existing_path = m + os.pathsep + existing_path
+            continue
+        node_exe = os.path.join(candidate, "node.exe")
+        if os.path.isfile(node_exe) and candidate not in existing_dirs:
+            existing_dirs.add(candidate)
+            existing_path = candidate + os.pathsep + existing_path
+    env["PATH"] = existing_path
     return env
 
 
@@ -769,10 +932,27 @@ def _build_rejection_response(reason: str, command_head: str | None = None) -> E
             "skills/word-docx/scripts/{create,edit,view}.py、"
             "skills/excel-xlsx/scripts/{create,edit,view}.py。"
         )
+    elif reason == "bash_unsafe":
+        output = (
+            f"{_SHELL_DENIED_MARKER} bash/sh 命令含禁止选项（-c/-s），已被拦截。"
+            "禁止内联代码——请直接调用 skills 自带脚本。"
+        )
+    elif reason == "bash_script_not_allowed":
+        output = (
+            f"{_SHELL_DENIED_MARKER} bash/sh 脚本 `{command_head}` 不在 skills 白名单内，已被拦截。"
+            "禁止自写脚本——只能执行 skills 自带脚本："
+            "skills/web-video-presentation/scripts/scaffold.sh 等。"
+        )
+    elif reason == "curl_host_denied":
+        output = (
+            f"{_SHELL_DENIED_MARKER} curl 目标 URL `{command_head}` 的 host 不在白名单内，已被拦截。"
+            "允许的 host：api.openai.com。"
+        )
     elif reason == "not_in_allowlist" and command_head:
         output = (
             f"{_SHELL_DENIED_MARKER} 命令 `{command_head}` 不在白名单内，已被拦截。"
-            "允许的命令：python/ls/dir/cat/type/head/tail/find/pwd/test/echo/cd/pushd/popd/chdir。"
+            "允许的命令：python/ls/dir/cat/type/head/tail/find/pwd/test/echo/"
+            "cd/pushd/popd/chdir/npm/npx/node/bash/sh/jq/curl/zip。"
         )
     else:
         output = f"{_SHELL_DENIED_MARKER} 命令未通过安全校验，已被拦截。"
@@ -910,6 +1090,42 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
                             reason="python_script_not_allowed", command_head=positional,
                         )
 
+            # bash/sh -c/-s 拦截（内联代码风险，仿 python -c 拦截）
+            if head in {"bash", "sh"}:
+                for tok in tokens[1:]:
+                    if tok in {"-c", "-s"}:
+                        logger.warning("[shell_filter] bash/sh 危险选项被拒绝: %s", tok)
+                        return _build_rejection_response(reason="bash_unsafe", command_head=tok)
+                # bash/sh 脚本白名单：第一个位置参数（脚本路径）必须在 skills 白名单内。
+                # 路径规范化逻辑与 python 分支一致。
+                positional = _extract_bash_positional(segment)
+                if positional is not None and self._skill_scripts:
+                    root_posix = _to_posix(str(self._skills_root))
+                    root_win = str(self._skills_root)
+                    rewritten = _rewrite_path_token(positional, root_posix, root_win)
+                    candidate = rewritten if rewritten is not None else positional
+                    candidate_norm = _to_posix(candidate)
+                    if candidate_norm not in self._skill_scripts:
+                        logger.warning(
+                            "[shell_filter] bash/sh 脚本非白名单被拒绝: %s (normalized=%s)",
+                            positional, candidate_norm,
+                        )
+                        return _build_rejection_response(
+                            reason="bash_script_not_allowed", command_head=positional,
+                        )
+
+            # curl host 白名单拦截：只放行 _CURL_ALLOWED_HOSTS 中的 host
+            if head == "curl":
+                urls = _extract_curl_urls(segment)
+                allowed, denied_url = _curl_urls_allowed(urls)
+                if not allowed:
+                    logger.warning(
+                        "[shell_filter] curl host 白名单拒绝: url=%s", denied_url,
+                    )
+                    return _build_rejection_response(
+                        reason="curl_host_denied", command_head=denied_url,
+                    )
+
         # 3. cd/pushd/chdir 目标越界拦截（路径改写后再校验）
         if self._skills_root:
             for cd_match in _CD_PATTERN.finditer(command):
@@ -975,7 +1191,11 @@ Path("workspace/output").mkdir(parents=True, exist_ok=True)
 
 # 组装 backend：外层白名单 + 内层路径改写/编码。
 _inner_backend = _SkillsShellBackend(root_dir="workspace", virtual_mode=True)
-backend = _ShellWhitelistFilter(_inner_backend, skills_root=str(_inner_backend.cwd))
+backend = _ShellWhitelistFilter(
+    _inner_backend,
+    allow_commands=DEFAULT_ALLOWED_COMMANDS | _NODE_BUILD_COMMANDS,
+    skills_root=str(_inner_backend.cwd),
+)
 
 #去掉 interrupt_on
 agent = create_deep_agent(

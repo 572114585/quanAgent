@@ -4,9 +4,14 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+*.egg-info/
+dist/
+build/
 
 # 环境变量 / 密钥
 .env
+.env.local
+.env.*.local
 
 # IDE / Agent
 .agent/
@@ -19,3 +24,39 @@ Thumbs.db
 
 # 日志
 *.log
+*.err
+
+# ========== 前端（agent-frontend） ==========
+# Node.js 依赖
+node_modules/
+.pnp
+.pnp.js
+
+# 前端构建产物
+agent-frontend/dist/
+agent-frontend/dist-ssr/
+agent-frontend/*.local
+agent-frontend/.vite/
+agent-frontend/.tauri/
+agent-frontend/tsconfig*.tsbuildinfo
+
+# Tauri Rust 构建
+agent-frontend/src-tauri/target/
+agent-frontend/src-tauri/Cargo.lock
+agent-frontend/src-tauri/gen/
+
+# 前端日志
+agent-frontend/npm-debug.log*
+agent-frontend/yarn-debug.log*
+agent-frontend/yarn-error.log*
+agent-frontend/pnpm-debug.log*
+
+# ========== 工作目录临时文件 ==========
+workspace/tmp/
+workspace/uploads/
+workspace/output/
+*.tmp
+nul
+
+# Tauri 安装器（大文件）
+agent-frontend/installers/

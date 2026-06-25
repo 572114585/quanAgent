@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/android-schema.json",
+  "identifier": "mobile",
+  "description": "Capability set for Android / iOS",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "os:default",
+    "dialog:default",
+    "fs:default",
+    "http:default",
+    "store:default"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "name": "agent-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cross-platform frontend for the agent runtime (Web + Desktop + Mobile via Tauri 2)",
+  "scripts": {
+    "dev": "vite",
+    "dev:tauri": "tauri dev",
+    "build": "vue-tsc -b && vite build",
+    "build:web": "vue-tsc -b && vite build --mode web",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:android": "tauri android build",
+    "tauri:build:ios": "tauri ios build",
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
+    "format": "prettier --write src/",
+    "mock:sse": "node scripts/mock-sse-server.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.0.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "@tauri-apps/plugin-http": "^2.0.1",
+    "@tauri-apps/plugin-os": "^2.0.1",
+    "@tauri-apps/plugin-store": "^2.4.3",
+    "lucide-vue-next": "^0.460.0",
+    "marked": "^14.1.4",
+    "ofetch": "^1.5.1",
+    "pinia": "^2.3.1",
+    "reka-ui": "^2.10.0",
+    "shiki": "^1.29.2",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/node": "^22.9.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.21",
+    "vue-tsc": "^2.2.12"
+  }
+}

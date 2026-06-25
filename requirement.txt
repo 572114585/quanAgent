@@ -12,4 +12,10 @@ python-docx
 pandas
 Pillow
 PyPDF2
+fpdf2
 playwright
+fastapi>=0.110
+uvicorn[standard]>=0.27
+sse-starlette>=2.0
+python-multipart>=0.0.9
+pydantic>=2.5
