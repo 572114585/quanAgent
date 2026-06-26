@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain } from 'lucide-vue-next'
+import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain, Wrench, ChevronRight } from 'lucide-vue-next'
 import { useMarkdown } from '@/composables/useMarkdown'
-import type { ToolCallRequest, ArtifactFile } from '@/types/domain'
+import type { ToolCallRequest, ToolCallRecord, ArtifactFile } from '@/types/domain'
 import HitlApproval from './HitlApproval.vue'
 import FileAttachment from './FileAttachment.vue'
 
@@ -11,6 +11,10 @@ const props = defineProps<{
   content: string
   thinkingContent?: string
   hasThought?: boolean
+  /** 思考过程中产生的工具调用列表（独立于最终答案） */
+  toolCalls?: ToolCallRecord[]
+  /** HITL 决策视觉反馈（"✅ 用户决定：批准" 等），进思考区 */
+  hitlNote?: string
   status?: 'pending' | 'streaming' | 'complete' | 'error' | 'cancelled' | 'awaiting_approval'
   error?: string
   attachments?: Array<{ id: string; name: string; mime: string; size: number; previewUrl?: string; remoteUrl?: string }>
@@ -37,12 +41,16 @@ const isCancelled = computed(() => props.status === 'cancelled')
 const isAwaitingApproval = computed(() => props.status === 'awaiting_approval')
 const hasContent = computed(() => !!(props.content && props.content.trim()))
 const hasThinkingContent = computed(() => !!(props.thinkingContent && props.thinkingContent.trim()))
+const hasToolCalls = computed(() => !!(props.toolCalls && props.toolCalls.length > 0))
+const hasHitlNote = computed(() => !!(props.hitlNote && props.hitlNote.trim()))
 const hasArtifacts = computed(() => !!(props.artifacts && props.artifacts.length > 0))
 const hasAttachments = computed(() => !!(props.attachments && props.attachments.length > 0))
 
 const shouldShowThinking = computed(() => {
   if (isUser.value) return false
   if (hasThinkingContent.value) return true
+  if (hasToolCalls.value) return true
+  if (hasHitlNote.value) return true
   if (props.hasThought) return true
   if (isStreaming.value && !hasContent.value) return true
   return false
@@ -81,6 +89,65 @@ watch(
 
 function toggleThinking() {
   thinkingExpanded.value = !thinkingExpanded.value
+}
+
+/** 单条工具调用默认是否展开（仅 running 时展开，completed 后折叠） */
+const expandedToolIds = ref<Set<string>>(new Set())
+watch(
+  () => props.toolCalls?.map((t) => `${t.id}:${t.status}`).join(',') ?? '',
+  () => {
+    // 新的 running 工具自动展开；状态变 completed 不强制折叠（保持用户选择）
+    for (const tc of props.toolCalls ?? []) {
+      if (tc.status === 'running' || tc.status === 'pending') {
+        expandedToolIds.value.add(tc.id)
+      }
+    }
+  },
+  { immediate: true }
+)
+function toggleToolCall(id: string) {
+  if (expandedToolIds.value.has(id)) expandedToolIds.value.delete(id)
+  else expandedToolIds.value.add(id)
+  // 触发响应式更新
+  expandedToolIds.value = new Set(expandedToolIds.value)
+}
+
+function formatArgs(args: string | Record<string, any> | undefined): string {
+  if (!args) return ''
+  if (typeof args === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(args), null, 2)
+    } catch {
+      return args
+    }
+  }
+  return JSON.stringify(args, null, 2)
+}
+
+function toolStatusLabel(status: ToolCallRecord['status']): string {
+  switch (status) {
+    case 'pending':
+      return '等待中'
+    case 'running':
+      return '执行中'
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+  }
+}
+
+function toolStatusClass(status: ToolCallRecord['status']): string {
+  switch (status) {
+    case 'pending':
+      return 'text-ink-subtle'
+    case 'running':
+      return 'text-accent'
+    case 'completed':
+      return 'text-ok'
+    case 'failed':
+      return 'text-danger'
+  }
 }
 
 const imageAttachments = computed(() => props.attachments?.filter((a) => a.mime.startsWith('image/')) ?? [])
@@ -225,7 +292,7 @@ async function copy() {
             class="flex items-center gap-1.5 text-xs text-ink-subtle hover:text-ink transition-colors py-1 px-1 rounded-md"
           >
             <Brain class="size-3.5" :class="{ 'animate-pulse': isActivelyThinking }" />
-            <span>{{ isActivelyThinking ? '思考中…' : '已思考' }}</span>
+            <span>{{ isActivelyThinking ? '处理中…' : '已处理任务' }}</span>
             <ChevronDown
               class="size-3.5 transition-transform duration-200"
               :class="{ 'rotate-180': !thinkingExpanded }"
@@ -233,14 +300,61 @@ async function copy() {
           </button>
           <div
             v-show="thinkingExpanded"
-            class="mt-1 pl-3 pr-3 py-2 text-xs text-ink-muted border-l-2 border-border bg-surface-muted/40 rounded-r-md"
+            class="mt-1 pl-3 pr-3 py-2 text-xs text-ink-muted border-l-2 border-border bg-surface-muted/40 rounded-r-md space-y-2"
           >
             <div v-if="hasThinkingContent" class="markdown-body thinking-body" v-html="thinkingHtml" />
-            <div v-else class="flex items-center gap-1.5">
+            <div v-else-if="!hasToolCalls && !hasHitlNote" class="flex items-center gap-1.5">
               <span class="size-1.5 rounded-full bg-ink-subtle animate-pulse-dot" />
               <span class="size-1.5 rounded-full bg-ink-subtle animate-pulse-dot" style="animation-delay: 0.2s" />
               <span class="size-1.5 rounded-full bg-ink-subtle animate-pulse-dot" style="animation-delay: 0.4s" />
               <span class="ml-1">正在分析问题、调用工具...</span>
+            </div>
+
+            <!-- HITL 决策视觉反馈：仅在思考区显示，不污染最终答案 -->
+            <div v-if="hasHitlNote" class="text-[11px] text-ink-muted">
+              {{ hitlNote }}
+            </div>
+
+            <!-- 工具调用列表：与最终答案 content 解耦，独立渲染在思考区 -->
+            <div v-if="hasToolCalls" class="space-y-1.5">
+              <div
+                v-for="tc in toolCalls"
+                :key="tc.id"
+                class="rounded-md border border-border bg-surface-elevated/60 overflow-hidden"
+              >
+                <button
+                  class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-muted transition-colors"
+                  @click="toggleToolCall(tc.id)"
+                >
+                  <Wrench class="size-3.5 shrink-0 text-ink-subtle" />
+                  <span class="font-mono text-xs text-ink">{{ tc.name }}</span>
+                  <span :class="['text-[10px] ml-auto', toolStatusClass(tc.status)]">
+                    {{ toolStatusLabel(tc.status) }}
+                  </span>
+                  <ChevronRight
+                    class="size-3.5 text-ink-subtle transition-transform duration-200"
+                    :class="{ 'rotate-90': expandedToolIds.has(tc.id) }"
+                  />
+                </button>
+                <div
+                  v-show="expandedToolIds.has(tc.id)"
+                  class="px-2 pb-2 pt-1 border-t border-border bg-surface-muted/30"
+                >
+                  <div v-if="formatArgs(tc.args)" class="mb-1.5">
+                    <div class="text-[10px] text-ink-subtle mb-0.5">入参</div>
+                    <pre class="text-[11px] font-mono whitespace-pre-wrap break-all text-ink">{{ formatArgs(tc.args) }}</pre>
+                  </div>
+                  <div v-if="tc.output !== undefined">
+                    <div class="text-[10px] text-ink-subtle mb-0.5">返回</div>
+                    <pre class="text-[11px] font-mono whitespace-pre-wrap break-all text-ink max-h-40 overflow-auto">{{ tc.output }}</pre>
+                  </div>
+                  <div v-else-if="tc.status === 'running' || tc.status === 'pending'" class="flex items-center gap-1.5 text-[10px] text-ink-subtle">
+                    <span class="size-1.5 rounded-full bg-accent animate-pulse-dot" />
+                    <span>执行中…</span>
+                  </div>
+                  <div v-if="tc.error" class="text-[11px] text-danger mt-1">⚠ {{ tc.error }}</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

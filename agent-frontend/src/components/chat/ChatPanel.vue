@@ -200,6 +200,8 @@ function onDecide(_messageId: string, decisions: Array<{ type: 'approve' | 'reje
           :content="m.content"
           :thinking-content="m.thinkingContent"
           :has-thought="m.hasThought"
+          :tool-calls="m.toolCalls"
+          :hitl-note="m.hitlNote"
           :status="m.status"
           :error="m.error"
           :attachments="m.attachments"

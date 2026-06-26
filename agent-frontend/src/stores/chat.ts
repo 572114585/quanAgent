@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, ToolCallRequest, Attachment, ArtifactFile } from '@/types/domain'
+import type { Message, MessageStatus, ToolCallRequest, ToolCallRecord, Attachment, ArtifactFile } from '@/types/domain'
 import { sendChatMessage, resumeChat } from '@/api/chat'
 
 export type ChatMessage = Message
@@ -62,13 +62,79 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function attachToolResult(sessionId: string, id: string, tool: { name: string; preview?: string }) {
+  function attachToolResult(sessionId: string, id: string, tool: { name: string; args?: string; preview?: string }) {
     const arr = messagesBySession.value[sessionId]
     if (!arr) return
     const m = arr.find((x) => x.id === id)
     if (!m) return
-    // 把工具结果以折叠方式追加到 message content 后（HITL 模式下供前端展示）
-    m.content += `\n\n> 🔧 **${tool.name}** ${tool.preview ? `— ${tool.preview}` : ''}\n`
+    // 旧协议兼容：不再追加到 content（会污染最终答案），改写入 toolCalls 数组
+    if (!m.toolCalls) m.toolCalls = []
+    m.toolCalls.push({
+      id: uid('tc'),
+      name: tool.name,
+      args: tool.args,
+      output: tool.preview,
+      status: 'completed'
+    })
+  }
+
+  /**
+   * 新协议：把工具调用记录写入 message.toolCalls（独立于 content / thinkingContent）。
+   * 由 tool_call 事件触发，状态默认 'running'，等待 tool_result 补全。
+   */
+  function addToolCall(sessionId: string, id: string, call: { callId?: string; name: string; args?: string | Record<string, any> }) {
+    const arr = messagesBySession.value[sessionId]
+    if (!arr) return
+    const m = arr.find((x) => x.id === id)
+    if (!m) return
+    if (!m.toolCalls) m.toolCalls = []
+    m.toolCalls.push({
+      id: call.callId ?? uid('tc'),
+      name: call.name,
+      args: call.args,
+      status: 'running'
+    })
+  }
+
+  /**
+   * 新协议：补全工具调用的 output / status。
+   * 通过 callId（后端生成）或 name + 最近一条匹配来定位。
+   */
+  function updateToolResult(
+    sessionId: string,
+    id: string,
+    payload: { callId?: string; name: string; output?: string; error?: string }
+  ) {
+    const arr = messagesBySession.value[sessionId]
+    if (!arr) return
+    const m = arr.find((x) => x.id === id)
+    if (!m || !m.toolCalls) return
+    // 优先按 callId 精确匹配，否则按 name 反向找最近一条 running
+    let record = payload.callId
+      ? m.toolCalls.find((tc) => tc.id === payload.callId)
+      : undefined
+    if (!record) {
+      for (let i = m.toolCalls.length - 1; i >= 0; i--) {
+        if (m.toolCalls[i].name === payload.name && m.toolCalls[i].status === 'running') {
+          record = m.toolCalls[i]
+          break
+        }
+      }
+    }
+    if (!record) {
+      // 没找到对应 running 条目 → 新建一条 completed 记录
+      m.toolCalls.push({
+        id: payload.callId ?? uid('tc'),
+        name: payload.name,
+        output: payload.output,
+        error: payload.error,
+        status: payload.error ? 'failed' : 'completed'
+      })
+      return
+    }
+    record.output = payload.output
+    record.error = payload.error
+    record.status = payload.error ? 'failed' : 'completed'
   }
 
   function markThinking(sessionId: string, id: string) {
@@ -182,7 +248,16 @@ export const useChatStore = defineStore('chat', () => {
             appendThinkingDelta(sessionId, assistantMsg.id, delta)
           },
           onTool: (tool) => {
+            // 旧协议兼容：仍由 attachToolResult 把内容追加进 content
             attachToolResult(sessionId, assistantMsg.id, tool)
+          },
+          onToolCall: (call) => {
+            // 新协议：工具开始 → 进入 toolCalls 数组（独立于最终答案）
+            addToolCall(sessionId, assistantMsg.id, call)
+          },
+          onToolResult: (payload) => {
+            // 新协议：工具返回 → 补全对应条目
+            updateToolResult(sessionId, assistantMsg.id, payload)
           },
           onInterrupt: (toolCalls) => {
             setPendingToolCalls(sessionId, assistantMsg.id, toolCalls)
@@ -248,10 +323,13 @@ export const useChatStore = defineStore('chat', () => {
 
     lastApprovalMsg.status = 'streaming'
     lastApprovalMsg.pendingToolCalls = undefined
-    lastApprovalMsg.content +=
-      decisions.length > 0
-        ? `\n\n> ✅ 用户决定：${decisions.map((d) => (d.type === 'approve' ? '批准' : '拒绝')).join('、')}\n`
-        : ''
+    // 之前：把"✅ 用户决定：批准"直接追加到 content —— 污染最终答案区。
+    // 现在：写到 hitlNote，在 MessageBubble 的思考区折叠展示，content 保持干净。
+    if (decisions.length > 0) {
+      lastApprovalMsg.hitlNote = `✅ 用户决定：${decisions
+        .map((d) => (d.type === 'approve' ? '批准' : '拒绝'))
+        .join('、')}`
+    }
     sessions.touch(sessionId)
 
     const controller = new AbortController()
@@ -269,6 +347,12 @@ export const useChatStore = defineStore('chat', () => {
         },
         onTool: (tool) => {
           attachToolResult(sessionId, lastApprovalMsg!.id, tool)
+        },
+        onToolCall: (call) => {
+          addToolCall(sessionId, lastApprovalMsg!.id, call)
+        },
+        onToolResult: (payload) => {
+          updateToolResult(sessionId, lastApprovalMsg!.id, payload)
         },
         onInterrupt: (toolCalls) => {
           setPendingToolCalls(sessionId, lastApprovalMsg!.id, toolCalls)
@@ -345,6 +429,8 @@ export const useChatStore = defineStore('chat', () => {
     appendDelta,
     appendThinkingDelta,
     addArtifact,
+    addToolCall,
+    updateToolResult,
     clear,
     stop,
     send,

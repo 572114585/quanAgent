@@ -22,6 +22,10 @@ export interface StreamHandlers {
   onThinking?: () => void
   onThinkingDelta?: (delta: string) => void
   onTool?: (tool: { name: string; args?: string; preview?: string }) => void
+  /** 新协议：工具开始调用（独立于最终答案，进入 message.toolCalls） */
+  onToolCall?: (call: { callId: string; name: string; args?: string | Record<string, any> }) => void
+  /** 新协议：工具执行完成（补全 message.toolCalls 中对应条目） */
+  onToolResult?: (payload: { callId: string; name: string; output?: string; error?: string }) => void
   onInterrupt?: (toolCalls: ToolCallRequest[]) => void
   onUsage?: (usage: { prompt: number; completion: number }) => void
   onArtifact?: (artifact: { name: string; path: string; url: string; mime: string; size: number }) => void
@@ -59,6 +63,17 @@ export async function sendChatMessage(
         break
       case 'tool':
         handlers.onTool?.({ name: evt.name, args: evt.args, preview: evt.preview })
+        break
+      case 'tool_call':
+        handlers.onToolCall?.({ callId: evt.callId, name: evt.name, args: evt.args })
+        break
+      case 'tool_result':
+        handlers.onToolResult?.({
+          callId: evt.callId,
+          name: evt.name,
+          output: evt.output,
+          error: evt.error
+        })
         break
       case 'interrupt':
         handlers.onInterrupt?.(evt.toolCalls)
@@ -114,6 +129,17 @@ export async function resumeChat(
         break
       case 'tool':
         handlers.onTool?.({ name: evt.name, args: evt.args, preview: evt.preview })
+        break
+      case 'tool_call':
+        handlers.onToolCall?.({ callId: evt.callId, name: evt.name, args: evt.args })
+        break
+      case 'tool_result':
+        handlers.onToolResult?.({
+          callId: evt.callId,
+          name: evt.name,
+          output: evt.output,
+          error: evt.error
+        })
         break
       case 'interrupt':
         handlers.onInterrupt?.(evt.toolCalls)
