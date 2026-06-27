@@ -38,6 +38,7 @@ Agent Web Bridge —— 把 agent_runtime 的 deep agent 暴露为 HTTP + SSE �
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -94,8 +95,12 @@ HITL_ENABLED = os.getenv("HITL_ENABLED", "true").lower() in ("1", "true", "yes")
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024)))  # 20MB
 
 # === Agent 单例（与 agent_runtime.agent 同配置，但 HITL 开关独立） ===
-_agent_lock_key = "_agent_singleton"
-_agent_error_key = "_agent_init_error"
+# uvicorn 在单 event loop 内并发多请求，首请求初始化期间若无锁，
+# 并发的第二个请求会重复进入初始化分支，创建多个 agent 并覆盖单例。
+# 用 asyncio.Lock 保护：首个协程持锁初始化，其余等待。
+_agent_singleton: object | None = None
+_agent_init_error: str | None = None
+_agent_init_lock = asyncio.Lock()
 
 
 def build_agent(hitl: bool):
@@ -117,23 +122,35 @@ def build_agent(hitl: bool):
     )
 
 
-def get_agent() -> object:
-    """懒加载 + 单例。初始化失败时持久化错误状态，避免每次请求都重试。"""
-    cached_error = getattr(get_agent, _agent_error_key, None)
-    if cached_error is not None:
-        raise RuntimeError(f"Agent initialization failed: {cached_error}")
+async def get_agent() -> object:
+    """懒加载 + 单例（asyncio.Lock 保护并发）。初始化失败时持久化错误状态，避免每次请求都重试。"""
+    global _agent_singleton, _agent_init_error
 
-    if not hasattr(get_agent, _agent_lock_key):
+    # 失败后不再重试：直接返回持久化错误
+    if _agent_init_error is not None:
+        raise RuntimeError(f"Agent initialization failed: {_agent_init_error}")
+
+    if _agent_singleton is not None:
+        return _agent_singleton
+
+    async with _agent_init_lock:
+        # 双检：持锁后可能已有协程完成初始化
+        if _agent_init_error is not None:
+            raise RuntimeError(f"Agent initialization failed: {_agent_init_error}")
+        if _agent_singleton is not None:
+            return _agent_singleton
+
         try:
             agent = build_agent(HITL_ENABLED)
-            setattr(get_agent, _agent_lock_key, agent)
+            _agent_singleton = agent
             logger.info("Agent initialized (hitl=%s)", HITL_ENABLED)
         except Exception as e:
             error_msg = str(e)
-            setattr(get_agent, _agent_error_key, error_msg)
+            _agent_init_error = error_msg
             logger.error("Agent initialization failed, error persisted: %s", error_msg)
             raise RuntimeError(f"Agent initialization failed: {error_msg}") from e
-    return getattr(get_agent, _agent_lock_key)
+
+    return _agent_singleton
 
 
 # === FastAPI 应用 ===
@@ -263,17 +280,17 @@ def _build_attachment_context(attachments: list[Attachment]) -> str:
     if docs:
         if images:
             lines.append("")
-        lines.append("以下文档文件已上传到本地，你可以使用 document-parser skill 解析这些文档：")
+        lines.append("以下文档文件已上传到本地，你可以使用 mineru skill 解析这些文档：")
         lines.append("")
         for doc in docs:
             size_kb = doc.size / 1024 if doc.size else 0
             local_path = _get_local_path(doc.remoteUrl)
             lines.append(f"- 📄 **{doc.name}**（{doc.mime}, {size_kb:.1f} KB）：`{local_path}`")
         lines.append("")
-        lines.append("解析文档的方法：使用 execute 工具运行 document-parser skill 的 parse.py 脚本。")
+        lines.append("解析文档的方法：使用 execute 工具运行 mineru skill 的 extract.py 脚本。")
         lines.append("示例命令：")
         lines.append("```")
-        lines.append(f"python skills/document-parser/scripts/parse.py --file {_get_local_path(docs[0].remoteUrl)} --out output/parsed.md")
+        lines.append(f"python skills/mineru/scripts/extract.py {_get_local_path(docs[0].remoteUrl)} -o output/parsed.md")
         lines.append("```")
         lines.append("解析完成后，读取 output/parsed.md 即可获取文档内容，再据此回答用户问题。")
         lines.append("如果用户的消息为空或仅要求解析/总结文档，请先执行解析，再根据解析结果作答。")
@@ -477,7 +494,9 @@ async def _stream_agent(
                     pending_tool_calls[idx]["args"] += tc["args"]
 
         # 检查 HITL 中断
-        state = agent_obj.get_state(config)
+        # 必须用 aget_state（异步）：get_state 是同步阻塞调用，
+        # 在 async 上下文里会卡住事件循环，导致 SSE 数据无法 flush。
+        state = await agent_obj.aget_state(config)
         if state.next:
             interrupts: list[dict] = []
             for task in state.tasks:
@@ -498,6 +517,47 @@ async def _stream_agent(
         logger.exception("Stream error")
         yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
         yield _sse({"type": "done", "messageId": message_id})
+
+
+async def _stream_with_artifacts(
+    agent_obj,
+    input_payload,
+    config: dict,
+    message_id: str,
+) -> AsyncGenerator[dict, None]:
+    """流式输出 + 产物检测的公共包装。
+
+    /chat 和 /chat/resume 的 event_stream 逻辑几乎完全相同：
+    snapshot output/ → 透传 stream 事件 → 拦截 done 末尾插入 artifact → 放行 done。
+    抽到这里避免两处闭包重复维护。
+
+    行为：
+    - 透传所有事件；error 事件透传后立即终止；
+    - done 事件暂存到最后，先发 output/ 下新增的 artifact 事件，再发 done；
+    - 若 stream 抛异常，_stream_agent 内部已转成 error+done，这里照常透传。
+    """
+    snapshot_before = _snapshot_output_dir()
+    done_evt = None
+    async for evt in _stream_agent(agent_obj, input_payload, config, message_id):
+        evt_data = evt.get("data", "")
+        try:
+            parsed = json.loads(evt_data)
+            if parsed.get("type") == "done":
+                done_evt = evt
+                continue
+            if parsed.get("type") == "error":
+                yield evt
+                return
+        except (json.JSONDecodeError, TypeError):
+            pass
+        yield evt
+    if done_evt is not None:
+        new_artifacts = _detect_new_artifacts(snapshot_before)
+        for art in new_artifacts:
+            yield _sse({"type": "artifact", **art})
+        if new_artifacts:
+            logger.info("Detected %d new artifact(s) in output/", len(new_artifacts))
+        yield done_evt
 
 
 async def _aiter_from_sync(loop, sync_gen):
@@ -559,7 +619,7 @@ async def chat(req: ChatRequest):
     user_content: str | list[dict] = user_message
 
     try:
-        agent_obj = get_agent()
+        agent_obj = await get_agent()
     except RuntimeError as e:
         return JSONResponse(
             status_code=503,
@@ -575,33 +635,13 @@ async def chat(req: ChatRequest):
     )
 
     async def event_stream() -> AsyncGenerator[dict, None]:
-        snapshot_before = _snapshot_output_dir()
-        done_evt = None
-        async for evt in _stream_agent(
+        async for evt in _stream_with_artifacts(
             agent_obj,
             {"messages": [{"role": "user", "content": user_content}]},
             config,
             message_id,
         ):
-            evt_data = evt.get("data", "")
-            try:
-                parsed = json.loads(evt_data)
-                if parsed.get("type") == "done":
-                    done_evt = evt
-                    continue
-                if parsed.get("type") == "error":
-                    yield evt
-                    return
-            except (json.JSONDecodeError, TypeError):
-                pass
             yield evt
-        if done_evt is not None:
-            new_artifacts = _detect_new_artifacts(snapshot_before)
-            for art in new_artifacts:
-                yield _sse({"type": "artifact", **art})
-            if new_artifacts:
-                logger.info("Detected %d new artifact(s) in output/", len(new_artifacts))
-            yield done_evt
 
     return EventSourceResponse(event_stream(), ping=15)
 
@@ -610,7 +650,7 @@ async def chat(req: ChatRequest):
 async def resume(req: ResumeRequest):
     """HITL 中断后提交用户决定，继续流式输出。"""
     try:
-        agent_obj = get_agent()
+        agent_obj = await get_agent()
     except RuntimeError as e:
         return JSONResponse(
             status_code=503,
@@ -621,33 +661,13 @@ async def resume(req: ResumeRequest):
     logger.info("resume session=%s decisions=%s", req.sessionId, req.decisions)
 
     async def event_stream() -> AsyncGenerator[dict, None]:
-        snapshot_before = _snapshot_output_dir()
-        done_evt = None
-        async for evt in _stream_agent(
+        async for evt in _stream_with_artifacts(
             agent_obj,
             Command(resume={"decisions": req.decisions}),
             config,
             message_id,
         ):
-            evt_data = evt.get("data", "")
-            try:
-                parsed = json.loads(evt_data)
-                if parsed.get("type") == "done":
-                    done_evt = evt
-                    continue
-                if parsed.get("type") == "error":
-                    yield evt
-                    return
-            except (json.JSONDecodeError, TypeError):
-                pass
             yield evt
-        if done_evt is not None:
-            new_artifacts = _detect_new_artifacts(snapshot_before)
-            for art in new_artifacts:
-                yield _sse({"type": "artifact", **art})
-            if new_artifacts:
-                logger.info("Detected %d new artifact(s) in output/", len(new_artifacts))
-            yield done_evt
 
     return EventSourceResponse(event_stream(), ping=15)
 

@@ -9,12 +9,9 @@
  * 配套端点：
  *   POST {baseURL}/chat/resume  HITL 中断后提交决定
  *   POST {baseURL}/upload       FormData 单文件上传，返回 { url, name, mime, size }
- *
- * 兼容入口：如果后端走 OpenAI 兼容协议（chunk.choices[0].delta.content），
- * 可在 chatStream 内增加分支解析；Phase 3 默认走自定义 StreamEvent。
  */
 import type { ChatRequest, StreamEvent, ToolCallRequest } from '@/types/domain'
-import { chatStream } from './sse'
+import { chatStream, resumeStream, getRuntimeBaseUrl } from './sse'
 
 export interface StreamHandlers {
   onStart?: (messageId: string) => void
@@ -34,20 +31,15 @@ export interface StreamHandlers {
 }
 
 /**
- * 消费 SSE 流直至结束或被 abort。
- *  - delta：逐片调用 onDelta
- *  - tool：调用 onTool 显示工具调用摘要
- *  - interrupt：调用 onInterrupt 触发 HITL 审批 UI
- *  - done：调用 onDone 后正常返回
- *  - error：调用 onError 后抛 ChatStreamError，由 store 标 status=error
+ * 消费 SSE 流直至结束或被 abort，统一分发事件到 handlers。
+ * 提取自 sendChatMessage / resumeChat 的公共逻辑，消除重复 switch。
  */
-export async function sendChatMessage(
-  req: ChatRequest,
-  signal: AbortSignal,
+async function consumeStream(
+  stream: AsyncGenerator<StreamEvent>,
   handlers: StreamHandlers
 ): Promise<void> {
   let sawError: string | null = null
-  for await (const evt of chatStream(req, { signal, onUsage: handlers.onUsage })) {
+  for await (const evt of stream) {
     switch (evt.type) {
       case 'start':
         handlers.onStart?.(evt.messageId)
@@ -102,8 +94,21 @@ export async function sendChatMessage(
 }
 
 /**
+ * 发送消息并通过 SSE 流式接收响应。
+ */
+export async function sendChatMessage(
+  req: ChatRequest,
+  signal: AbortSignal,
+  handlers: StreamHandlers
+): Promise<void> {
+  await consumeStream(
+    chatStream(req, { signal, onUsage: handlers.onUsage }),
+    handlers
+  )
+}
+
+/**
  * HITL 批准/拒绝后继续流式输出。
- * 复用 sendChatMessage 之外的 /chat/resume 端点。
  */
 export async function resumeChat(
   sessionId: string,
@@ -111,57 +116,10 @@ export async function resumeChat(
   signal: AbortSignal,
   handlers: StreamHandlers
 ): Promise<void> {
-  const { resumeStream } = await import('./sse')
-  let sawError: string | null = null
-  for await (const evt of resumeStream({ sessionId, decisions }, { signal, onUsage: handlers.onUsage })) {
-    switch (evt.type) {
-      case 'start':
-        handlers.onStart?.(evt.messageId)
-        break
-      case 'delta':
-        handlers.onDelta(evt.delta)
-        break
-      case 'thinking':
-        handlers.onThinking?.()
-        break
-      case 'thinking_delta':
-        handlers.onThinkingDelta?.(evt.delta)
-        break
-      case 'tool':
-        handlers.onTool?.({ name: evt.name, args: evt.args, preview: evt.preview })
-        break
-      case 'tool_call':
-        handlers.onToolCall?.({ callId: evt.callId, name: evt.name, args: evt.args })
-        break
-      case 'tool_result':
-        handlers.onToolResult?.({
-          callId: evt.callId,
-          name: evt.name,
-          output: evt.output,
-          error: evt.error
-        })
-        break
-      case 'interrupt':
-        handlers.onInterrupt?.(evt.toolCalls)
-        break
-      case 'usage':
-        handlers.onUsage?.({ prompt: evt.promptTokens, completion: evt.completionTokens })
-        break
-      case 'artifact':
-        handlers.onArtifact?.({ name: evt.name, path: evt.path, url: evt.url, mime: evt.mime, size: evt.size })
-        break
-      case 'ping':
-        break
-      case 'error':
-        sawError = evt.message
-        handlers.onError?.(evt.message)
-        break
-      case 'done':
-        handlers.onDone?.()
-        break
-    }
-  }
-  if (sawError) throw new ChatStreamError(sawError)
+  await consumeStream(
+    resumeStream({ sessionId, decisions }, { signal, onUsage: handlers.onUsage }),
+    handlers
+  )
 }
 
 /** 上传单个文件，返回后端分配的 URL。 */
@@ -171,7 +129,6 @@ export async function uploadFile(file: File): Promise<{
   mime: string
   size: number
 }> {
-  const { getRuntimeBaseUrl } = await import('./sse')
   const base = getRuntimeBaseUrl()
   const url = base ? `${base.replace(/\/+$/, '')}/upload` : '/upload'
   const fd = new FormData()

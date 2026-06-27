@@ -84,9 +84,9 @@ def log_tool_call(msg_chunk):
                 break
 
         if name == "read_file" and "SKILL.md" in args_str:
-            print(f"\n� [SKILL 激活] {name}({args_str})", flush=True)
+            print(f"\n🔧 [SKILL 激活] {name}({args_str})", flush=True)
         else:
-            print(f"\n� [工具调用] {name}({args_str})", flush=True)
+            print(f"\n🛠️ [工具调用] {name}({args_str})", flush=True)
         print(f"📋 [工具结果] {content_preview}{'...' if len(str(msg_chunk.content)) > 300 else ''}", flush=True)
 
 # === 多模态支持：把图片 URL 转成 OpenAI 格式 ===

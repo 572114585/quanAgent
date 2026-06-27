@@ -1,0 +1,333 @@
+/* ============================================================
+   Lite Technical Report Template
+   Designed for PDF export via Playwright (A4, single-column)
+   ============================================================ */
+
+/* --- Page Setup --- */
+@page {
+  size: A4;
+  margin: 40mm 30mm;
+}
+
+/* --- Reset & Base --- */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.8;
+  color: #1A1A1A;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 60px 40px;
+}
+
+/* --- Headings --- */
+h1 {
+  font-size: 28px;
+  text-align: center;
+  font-weight: 700;
+  color: #1A1A1A;
+  letter-spacing: normal;
+  border-bottom: 2px solid #2563EB;
+  padding-bottom: 0.6em;
+  margin-bottom: 1.5em;
+}
+
+h2 {
+  font-size: 20px;
+  text-align: left;
+  font-weight: 700;
+  color: #1A1A1A;
+  letter-spacing: normal;
+  border-left: 4px solid #2563EB;
+  padding-left: 12px;
+  margin-top: 2em;
+  margin-bottom: 1em;
+}
+
+h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1A1A1A;
+  letter-spacing: normal;
+  margin-top: 1.5em;
+  margin-bottom: 0.8em;
+}
+
+h4 {
+  font-size: 14px;
+  font-weight: 700;
+  font-style: italic;
+  color: #1A1A1A;
+  letter-spacing: normal;
+  margin-top: 1.2em;
+  margin-bottom: 0.6em;
+}
+
+/* --- Body Text --- */
+p {
+  margin-bottom: 1.2em;
+  text-align: justify;
+}
+
+strong,
+b {
+  color: #1A1A1A;
+  font-weight: 700;
+}
+
+em,
+i {
+  font-style: italic;
+}
+
+a {
+  color: #2563EB;
+  text-decoration: none;
+  transition: text-decoration 0.2s ease;
+}
+
+@media not print {
+  a:hover {
+    text-decoration: underline;
+  }
+}
+
+/* --- Blockquote --- */
+blockquote {
+  border-left: 4px solid #2563EB;
+  padding-left: 16px;
+  color: #555;
+  font-style: italic;
+  margin: 1.5em 0;
+}
+
+/* --- Code Blocks --- */
+pre {
+  background: #F1F5F9;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  margin: 1.2em 0;
+}
+
+pre code {
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+code {
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 0.9em;
+  background: #F1F5F9;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* --- Tables --- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5em 0;
+}
+
+th {
+  background: #F1F5F9;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-bottom: 2px solid #CBD5E1;
+  text-align: left;
+}
+
+td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #E2E8F0;
+}
+
+/* --- Images & Figures --- */
+img {
+  max-width: 100%;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+figure {
+  margin: 2em 0;
+  text-align: center;
+}
+
+figcaption {
+  font-size: 13px;
+  color: #64748B;
+  margin-top: 8px;
+}
+
+/* --- Math Blocks --- */
+.math-block {
+  text-align: center;
+  padding: 1em;
+  background: #FAFBFC;
+  border-radius: 6px;
+  margin: 1.2em 0;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 12pt;
+}
+
+.math-inline {
+  /* No special styling for inline math */
+}
+
+/* --- Lists --- */
+ul,
+ol {
+  padding-left: 2em;
+  margin-bottom: 1.2em;
+}
+
+li {
+  margin-bottom: 0.4em;
+}
+
+ul li::marker {
+  color: #2563EB;
+}
+
+/* --- Horizontal Rule --- */
+hr {
+  border: none;
+  height: 2px;
+  background: #E2E8F0;
+  margin: 2em 0;
+}
+
+/* --- APA References --- */
+.references {
+  padding-left: 2em;
+  text-indent: -2em;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #374151;
+  list-style-type: none;
+  counter-reset: ref-counter;
+}
+
+.references li {
+  margin-bottom: 0.6em;
+  counter-increment: ref-counter;
+}
+
+.references li::before {
+  content: "[" counter(ref-counter) "] ";
+  font-weight: 600;
+  color: #1A1A1A;
+}
+
+/* --- Page Break Utilities --- */
+.page-break-before {
+  page-break-before: always;
+}
+
+.page-break-after {
+  page-break-after: always;
+}
+
+.no-break {
+  page-break-inside: avoid;
+}
+
+/* --- Author & Meta Area --- */
+.meta {
+  text-align: center;
+  margin-bottom: 2em;
+  font-size: 12px;
+  color: #64748B;
+  line-height: 1.6;
+}
+
+.meta .authors {
+  font-weight: 600;
+  color: #1A1A1A;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.meta .affiliations {
+  font-style: italic;
+}
+
+/* --- Print Styles --- */
+@media print {
+  html {
+    font-size: 14px;
+  }
+
+  body {
+    max-width: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  h1 {
+    page-break-after: avoid;
+  }
+
+  h2,
+  h3,
+  h4 {
+    page-break-after: avoid;
+  }
+
+  pre,
+  blockquote,
+  table,
+  figure {
+    page-break-inside: avoid;
+  }
+
+  ::-webkit-scrollbar {
+    display: none;
+  }
+
+  body {
+    overflow: visible;
+  }
+
+  a {
+    color: #2563EB;
+    text-decoration: none;
+  }
+
+  img {
+    box-shadow: none;
+  }
+
+  .page-break-before {
+    page-break-before: always;
+  }
+
+  .page-break-after {
+    page-break-after: always;
+  }
+
+  .no-break {
+    page-break-inside: avoid;
+  }
+}

@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, ToolCallRequest, ToolCallRecord, Attachment, ArtifactFile } from '@/types/domain'
+import type { Message, MessageStatus, Attachment, ArtifactFile } from '@/types/domain'
 import { sendChatMessage, resumeChat } from '@/api/chat'
 
 export type ChatMessage = Message
@@ -62,26 +62,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function attachToolResult(sessionId: string, id: string, tool: { name: string; args?: string; preview?: string }) {
-    const arr = messagesBySession.value[sessionId]
-    if (!arr) return
-    const m = arr.find((x) => x.id === id)
-    if (!m) return
-    // 旧协议兼容：不再追加到 content（会污染最终答案），改写入 toolCalls 数组
-    if (!m.toolCalls) m.toolCalls = []
-    m.toolCalls.push({
-      id: uid('tc'),
-      name: tool.name,
-      args: tool.args,
-      output: tool.preview,
-      status: 'completed'
-    })
-  }
-
-  /**
-   * 新协议：把工具调用记录写入 message.toolCalls（独立于 content / thinkingContent）。
-   * 由 tool_call 事件触发，状态默认 'running'，等待 tool_result 补全。
-   */
   function addToolCall(sessionId: string, id: string, call: { callId?: string; name: string; args?: string | Record<string, any> }) {
     const arr = messagesBySession.value[sessionId]
     if (!arr) return
@@ -96,10 +76,6 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  /**
-   * 新协议：补全工具调用的 output / status。
-   * 通过 callId（后端生成）或 name + 最近一条匹配来定位。
-   */
   function updateToolResult(
     sessionId: string,
     id: string,
@@ -137,24 +113,6 @@ export const useChatStore = defineStore('chat', () => {
     record.status = payload.error ? 'failed' : 'completed'
   }
 
-  function markThinking(sessionId: string, id: string) {
-    const arr = messagesBySession.value[sessionId]
-    if (!arr) return
-    const m = arr.find((x) => x.id === id)
-    if (!m) return
-    m.hasThought = true
-  }
-
-  function setPendingToolCalls(sessionId: string, id: string, toolCalls: ToolCallRequest[]) {
-    const arr = messagesBySession.value[sessionId]
-    if (!arr) return
-    const m = arr.find((x) => x.id === id)
-    if (m) {
-      m.pendingToolCalls = toolCalls
-      m.status = 'awaiting_approval'
-    }
-  }
-
   function addArtifact(sessionId: string, id: string, artifact: ArtifactFile) {
     const arr = messagesBySession.value[sessionId]
     if (!arr) return
@@ -186,6 +144,7 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * 发送一条消息：创建 user + assistant 占位、调 SSE 流、根据事件更新 assistant。
+   * 内部回调直接操作 reactive 代理引用，避免每次 delta 都做线性查找。
    */
   async function send(sessionId: string, text: string, opts: SendOptions = {}) {
     const { useSessionsStore } = await import('./sessions')
@@ -217,6 +176,10 @@ export const useChatStore = defineStore('chat', () => {
     append(sessionId, assistantMsg)
     sessions.touch(sessionId)
 
+    // 获取 reactive 代理引用，回调中直接操作，避免逐 token 线性查找
+    const arr = messagesBySession.value[sessionId]
+    const msg = arr[arr.length - 1]
+
     const controller = new AbortController()
     aborters.value[sessionId] = controller
 
@@ -236,75 +199,112 @@ export const useChatStore = defineStore('chat', () => {
         controller.signal,
         {
           onStart: () => {
-            setStatus(sessionId, assistantMsg.id, 'streaming')
+            msg.status = 'streaming'
           },
           onDelta: (delta) => {
-            appendDelta(sessionId, assistantMsg.id, delta)
+            msg.content += delta
           },
           onThinking: () => {
-            markThinking(sessionId, assistantMsg.id)
+            msg.hasThought = true
           },
           onThinkingDelta: (delta) => {
-            appendThinkingDelta(sessionId, assistantMsg.id, delta)
+            msg.hasThought = true
+            if (!msg.thinkingContent) msg.thinkingContent = ''
+            msg.thinkingContent += delta
           },
           onTool: (tool) => {
-            // 旧协议兼容：仍由 attachToolResult 把内容追加进 content
-            attachToolResult(sessionId, assistantMsg.id, tool)
+            // 旧协议兼容：写入 toolCalls 数组，不污染最终答案
+            if (!msg.toolCalls) msg.toolCalls = []
+            msg.toolCalls.push({
+              id: uid('tc'),
+              name: tool.name,
+              args: tool.args,
+              output: tool.preview,
+              status: 'completed'
+            })
           },
           onToolCall: (call) => {
             // 新协议：工具开始 → 进入 toolCalls 数组（独立于最终答案）
-            addToolCall(sessionId, assistantMsg.id, call)
+            if (!msg.toolCalls) msg.toolCalls = []
+            msg.toolCalls.push({
+              id: call.callId ?? uid('tc'),
+              name: call.name,
+              args: call.args,
+              status: 'running'
+            })
           },
           onToolResult: (payload) => {
             // 新协议：工具返回 → 补全对应条目
-            updateToolResult(sessionId, assistantMsg.id, payload)
+            if (!msg.toolCalls) return
+            let record = payload.callId
+              ? msg.toolCalls.find((tc) => tc.id === payload.callId)
+              : undefined
+            if (!record) {
+              for (let i = msg.toolCalls.length - 1; i >= 0; i--) {
+                if (msg.toolCalls[i].name === payload.name && msg.toolCalls[i].status === 'running') {
+                  record = msg.toolCalls[i]
+                  break
+                }
+              }
+            }
+            if (!record) {
+              msg.toolCalls.push({
+                id: payload.callId ?? uid('tc'),
+                name: payload.name,
+                output: payload.output,
+                error: payload.error,
+                status: payload.error ? 'failed' : 'completed'
+              })
+              return
+            }
+            record.output = payload.output
+            record.error = payload.error
+            record.status = payload.error ? 'failed' : 'completed'
           },
           onInterrupt: (toolCalls) => {
-            setPendingToolCalls(sessionId, assistantMsg.id, toolCalls)
+            msg.pendingToolCalls = toolCalls
+            msg.status = 'awaiting_approval'
           },
           onError: (message) => {
-            setStatus(sessionId, assistantMsg.id, 'error', message)
+            msg.status = 'error'
+            msg.error = message
           },
           onUsage: (usage) => {
-            const arr = messagesBySession.value[sessionId]
-            const m = arr?.find((x) => x.id === assistantMsg.id)
-            if (m) m.usage = usage
+            msg.usage = usage
           },
           onArtifact: (artifact) => {
-            addArtifact(sessionId, assistantMsg.id, artifact)
+            if (!msg.artifacts) msg.artifacts = []
+            if (!msg.artifacts.find((a) => a.path === artifact.path)) {
+              msg.artifacts.push(artifact)
+            }
           },
           onDone: () => {
-            const arr = messagesBySession.value[sessionId]
-            const m = arr?.find((x) => x.id === assistantMsg.id)
-            if (m && m.status === 'streaming') {
-              m.status = 'complete'
-            }
+            if (msg.status === 'streaming') msg.status = 'complete'
           }
         }
       )
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        const arr = messagesBySession.value[sessionId]
-        const m = arr?.find((x) => x.id === assistantMsg.id)
-        if (m && m.status === 'streaming') {
-          m.status = 'cancelled'
-        }
+        if (msg.status === 'streaming') msg.status = 'cancelled'
       } else if (err?.name === 'ChatStreamError') {
-        setStatus(sessionId, assistantMsg.id, 'error', err.message)
+        msg.status = 'error'
+        msg.error = err.message
       } else {
-        setStatus(sessionId, assistantMsg.id, 'error', String(err?.message ?? err))
+        msg.status = 'error'
+        msg.error = String(err?.message ?? err)
       }
     } finally {
       aborters.value[sessionId] = null
-      const arr = messagesBySession.value[sessionId]
-      if (arr) {
-        sessions.touch(sessionId, { messageCount: arr.length })
+      const msgs = messagesBySession.value[sessionId]
+      if (msgs) {
+        sessions.touch(sessionId, { messageCount: msgs.length })
       }
     }
   }
 
   /**
    * HITL 审批：批准/拒绝后继续流式输出。
+   * 复用 lastApprovalMsg 的 reactive 代理引用，回调直接操作。
    */
   async function resume(sessionId: string, decisions: Array<{ type: 'approve' | 'reject' }>) {
     const { useSessionsStore } = await import('./sessions')
@@ -320,13 +320,13 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
     if (!lastApprovalMsg) return
+    // arr 是 reactive 数组，arr[i] 返回的是代理对象，可直接操作
+    const msg = lastApprovalMsg
 
-    lastApprovalMsg.status = 'streaming'
-    lastApprovalMsg.pendingToolCalls = undefined
-    // 之前：把"✅ 用户决定：批准"直接追加到 content —— 污染最终答案区。
-    // 现在：写到 hitlNote，在 MessageBubble 的思考区折叠展示，content 保持干净。
+    msg.status = 'streaming'
+    msg.pendingToolCalls = undefined
     if (decisions.length > 0) {
-      lastApprovalMsg.hitlNote = `✅ 用户决定：${decisions
+      msg.hitlNote = `✅ 用户决定：${decisions
         .map((d) => (d.type === 'approve' ? '批准' : '拒绝'))
         .join('、')}`
     }
@@ -337,48 +337,87 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       await resumeChat(sessionId, decisions, controller.signal, {
-        onStart: () => {
-        },
         onDelta: (delta) => {
-          appendDelta(sessionId, lastApprovalMsg!.id, delta)
+          msg.content += delta
         },
         onThinkingDelta: (delta) => {
-          appendThinkingDelta(sessionId, lastApprovalMsg!.id, delta)
+          msg.hasThought = true
+          if (!msg.thinkingContent) msg.thinkingContent = ''
+          msg.thinkingContent += delta
         },
         onTool: (tool) => {
-          attachToolResult(sessionId, lastApprovalMsg!.id, tool)
+          if (!msg.toolCalls) msg.toolCalls = []
+          msg.toolCalls.push({
+            id: uid('tc'),
+            name: tool.name,
+            args: tool.args,
+            output: tool.preview,
+            status: 'completed'
+          })
         },
         onToolCall: (call) => {
-          addToolCall(sessionId, lastApprovalMsg!.id, call)
+          if (!msg.toolCalls) msg.toolCalls = []
+          msg.toolCalls.push({
+            id: call.callId ?? uid('tc'),
+            name: call.name,
+            args: call.args,
+            status: 'running'
+          })
         },
         onToolResult: (payload) => {
-          updateToolResult(sessionId, lastApprovalMsg!.id, payload)
+          if (!msg.toolCalls) return
+          let record = payload.callId
+            ? msg.toolCalls.find((tc) => tc.id === payload.callId)
+            : undefined
+          if (!record) {
+            for (let i = msg.toolCalls.length - 1; i >= 0; i--) {
+              if (msg.toolCalls[i].name === payload.name && msg.toolCalls[i].status === 'running') {
+                record = msg.toolCalls[i]
+                break
+              }
+            }
+          }
+          if (!record) {
+            msg.toolCalls.push({
+              id: payload.callId ?? uid('tc'),
+              name: payload.name,
+              output: payload.output,
+              error: payload.error,
+              status: payload.error ? 'failed' : 'completed'
+            })
+            return
+          }
+          record.output = payload.output
+          record.error = payload.error
+          record.status = payload.error ? 'failed' : 'completed'
         },
         onInterrupt: (toolCalls) => {
-          setPendingToolCalls(sessionId, lastApprovalMsg!.id, toolCalls)
+          msg.pendingToolCalls = toolCalls
+          msg.status = 'awaiting_approval'
         },
         onError: (message) => {
-          setStatus(sessionId, lastApprovalMsg!.id, 'error', message)
+          msg.status = 'error'
+          msg.error = message
         },
         onUsage: (usage) => {
-          const arr = messagesBySession.value[sessionId]
-          const m = arr?.find((x) => x.id === lastApprovalMsg!.id)
-          if (m) m.usage = usage
+          msg.usage = usage
         },
         onArtifact: (artifact) => {
-          addArtifact(sessionId, lastApprovalMsg!.id, artifact)
+          if (!msg.artifacts) msg.artifacts = []
+          if (!msg.artifacts.find((a) => a.path === artifact.path)) {
+            msg.artifacts.push(artifact)
+          }
         },
         onDone: () => {
-          const m = messagesBySession.value[sessionId]?.find((x) => x.id === lastApprovalMsg!.id)
-          if (m && m.status === 'streaming') m.status = 'complete'
+          if (msg.status === 'streaming') msg.status = 'complete'
         }
       })
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        const m = messagesBySession.value[sessionId]?.find((x) => x.id === lastApprovalMsg!.id)
-        if (m && m.status === 'streaming') m.status = 'cancelled'
+        if (msg.status === 'streaming') msg.status = 'cancelled'
       } else {
-        setStatus(sessionId, lastApprovalMsg!.id, 'error', String(err?.message ?? err))
+        msg.status = 'error'
+        msg.error = String(err?.message ?? err)
       }
     } finally {
       aborters.value[sessionId] = null

@@ -4,6 +4,7 @@
 CLI（demo.py）保留不动；WeCom 渠道（run_wecom.py）从这里 import 同一个 agent。
 注意：WeCom 没有 stdin，**不启用** interrupt_on={...}（HITL 在企业微信里会卡死）。
 """
+import asyncio
 import logging
 import os
 import re
@@ -15,8 +16,6 @@ from typing import Iterable
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langfuse import get_client
-from langfuse.langchain import CallbackHandler
 from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -112,6 +111,10 @@ _SAFE_SUBPROCESS_ENV_KEYS: tuple[str, ...] = (
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_TTS_MODEL",
+    # MinerU 文档提取 skill:extract 模式需要 token(.env 中为 MINERU_API_TOKEN)。
+    # CLI 文档变量名为 MINERU_TOKEN,一并放行以兼容。
+    "MINERU_API_TOKEN",
+    "MINERU_TOKEN",
 )
 # Node 构建链命令：web-video-presentation 等 Node skill 需要。
 # 不并入 DEFAULT_ALLOWED_COMMANDS（保持默认收紧），由调用方按需合并传入。
@@ -860,8 +863,84 @@ class _SkillsShellBackend(LocalShellBackend):
             )
 
     async def aexecute(self, command: str, *, timeout: int | None = None):  # type: ignore[override]
-        # 同步实现即可（subprocess.run 是阻塞的）；deepagents 在异步路径也会调用此方法。
-        return self.execute(command, timeout=timeout)
+        # 必须真正异步：run.py 的 SSE 路径走 astream → aexecute。
+        # 若直接转调同步 subprocess.run，会阻塞 asyncio 事件循环，
+        # 导致 sse_starlette 无法及时 flush 数据到前端（token 延迟堆积）。
+        # 用 asyncio.create_subprocess_shell 真异步执行（保留 shell 语义以支持 &&/||/cd 链）。
+        if not command or not isinstance(command, str):
+            return ExecuteResponse(
+                output="Error: Command must be a non-empty string.",
+                exit_code=1,
+                truncated=False,
+            )
+
+        normalized = _normalize_command_paths(command, self.cwd)
+
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        if effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {effective_timeout}")
+
+        env = _build_skill_subprocess_env()
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                normalized,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                cwd=str(self.cwd),
+                env=env,
+            )
+        except Exception as exc:
+            return ExecuteResponse(
+                output=f"Error spawning command ({type(exc).__name__}): {exc}",
+                exit_code=1,
+                truncated=False,
+            )
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=effective_timeout
+            )
+            returncode = proc.returncode
+        except asyncio.TimeoutError:
+            # 杀掉超时子进程，避免僵尸
+            try:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+            except Exception:
+                pass
+            if timeout is not None:
+                msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
+            else:
+                msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
+            return ExecuteResponse(output=msg, exit_code=124, truncated=False)
+
+        stdout = _decode_shell_output(stdout_bytes)
+        stderr = _decode_shell_output(stderr_bytes)
+
+        output_parts: list[str] = []
+        if stdout:
+            output_parts.append(stdout)
+        if stderr:
+            stderr_lines = stderr.strip().split("\n")
+            output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
+
+        output = "\n".join(output_parts) if output_parts else "<no output>"
+        truncated = False
+        if len(output) > self._max_output_bytes:
+            output = output[: self._max_output_bytes]
+            output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+            truncated = True
+        if returncode != 0:
+            output = f"{output.rstrip()}\n\nExit code: {returncode}"
+
+        return ExecuteResponse(
+            output=output,
+            exit_code=returncode,
+            truncated=truncated,
+        )
 
 
 # ----------------------------- 外层：白名单安全拦截 -----------------------------
@@ -1206,9 +1285,6 @@ agent = create_deep_agent(
     checkpointer=MemorySaver(),
     skills=["skills/"],
 )
-
-langfuse = get_client()
-langfuse_handler = CallbackHandler()
 
 
 def new_thread_id(prefix: str = "thread") -> str:

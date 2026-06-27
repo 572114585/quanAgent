@@ -58,5 +58,20 @@ workspace/output/
 *.tmp
 nul
 
+# 项目根的 output/（skill 脚本误从项目根运行时产生，正确路径是 workspace/output/）
+/output/
+
+# 微软拼音输入法缓存（在 workspace 活跃时掉落，与项目无关）
+/workspace/*local.stat
+/workspace/image.*.db
+/workspace/inputstat.dat
+/workspace/sgim_punc.bin
+/workspace/share.config
+/workspace/user.config
+/workspace/*user.config
+
+# 未展开的 Windows 环境变量字面量目录（PowerShell 下 %var% 不会展开）
+/workspace/%*/
+
 # Tauri 安装器（大文件）
 agent-frontend/installers/

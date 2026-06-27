@@ -144,7 +144,7 @@ function toolStatusClass(status: ToolCallRecord['status']): string {
     case 'running':
       return 'text-accent'
     case 'completed':
-      return 'text-ok'
+      return 'text-success'
     case 'failed':
       return 'text-danger'
   }

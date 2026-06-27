@@ -134,110 +134,6 @@ export interface ChatStreamOptions {
 }
 
 /**
- * 流式调用 chat 接口，异步产出 StreamEvent。
- * 调用方负责遍历 generator；signal 触发后立即停止。
- */
-export async function* chatStream(
-  req: ChatRequest,
-  opts: ChatStreamOptions
-): AsyncGenerator<StreamEvent> {
-  const { signal } = opts
-  if (signal.aborted) return
-
-  const baseURL = resolveBaseURL()
-  const url = joinUrl(baseURL, '/chat')
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream, application/json;q=0.9, */*;q=0.5'
-    },
-    body: JSON.stringify(req),
-    signal
-  }).catch((err: unknown) => {
-    // AbortError 原样上抛，让 store 把它识别为用户主动 stop
-    if ((err as { name?: string })?.name === 'AbortError') throw err
-    throw new Error(`网络错误: ${(err as Error)?.message ?? String(err)}`)
-  })
-
-  if (!resp.ok) {
-    // 尝试解析后端错误体
-    let msg = `HTTP ${resp.status}`
-    try {
-      const ct = resp.headers.get('content-type') || ''
-      if (ct.includes('application/json')) {
-        const data = (await resp.json()) as { message?: string; error?: string }
-        msg = data.message || data.error || msg
-      } else {
-        const text = await resp.text()
-        if (text) msg = text.slice(0, 200)
-      }
-    } catch {
-      /* ignore */
-    }
-    yield { type: 'error', message: msg }
-    yield { type: 'done', messageId: '' }
-    return
-  }
-
-  const contentType = resp.headers.get('content-type') || ''
-  // 非 SSE：降级为一次性 JSON 响应
-  if (!contentType.includes('text/event-stream')) {
-    try {
-      const data = (await resp.json()) as { content?: string; message?: string }
-      if (typeof data.content === 'string') {
-        yield { type: 'delta', delta: data.content }
-      } else if (data.message) {
-        yield { type: 'error', message: data.message }
-      }
-    } catch (err) {
-      yield { type: 'error', message: `解析响应失败: ${(err as Error).message}` }
-    }
-    yield { type: 'done', messageId: '' }
-    return
-  }
-
-  if (!resp.body) {
-    yield { type: 'error', message: '响应体为空' }
-    yield { type: 'done', messageId: '' }
-    return
-  }
-
-  let sawDone = false
-  try {
-    for await (const frame of iterSseFrames(resp.body, signal)) {
-      const evt = parseSseFrame(frame)
-      if (!evt) continue
-      if (evt.type === 'usage') {
-        opts.onUsage?.({
-          prompt: evt.promptTokens,
-          completion: evt.completionTokens
-        })
-        continue
-      }
-      if (evt.type === 'done') {
-        sawDone = true
-        yield evt
-        return
-      }
-      if (evt.type === 'error') {
-        yield evt
-        // error 后继续交给外层处理，强制 done 收尾
-        yield { type: 'done', messageId: '' }
-        return
-      }
-      yield evt
-    }
-  } catch (err) {
-    if ((err as Error)?.name === 'AbortError') return
-    yield { type: 'error', message: (err as Error)?.message ?? '连接中断，请重试' }
-  }
-
-  if (!sawDone) yield { type: 'done', messageId: '' }
-}
-
-/**
  * 通用流式 POST：把请求体 JSON 化后 POST 到 {baseURL}{path}，按 SSE 解析。
  * 内部使用，被 chatStream / resumeStream 复用。
  */
@@ -333,6 +229,17 @@ async function* postStream(
   }
 
   if (!sawDone) yield { type: 'done', messageId: '' }
+}
+
+/**
+ * 流式调用 chat 接口，异步产出 StreamEvent。
+ * 复用 postStream 通用逻辑，避免重复代码。
+ */
+export async function* chatStream(
+  req: ChatRequest,
+  opts: ChatStreamOptions
+): AsyncGenerator<StreamEvent> {
+  yield* postStream('/chat', req, opts.signal, opts.onUsage)
 }
 
 /** 获取当前生效的 baseURL（供 uploadFile 等使用）。 */

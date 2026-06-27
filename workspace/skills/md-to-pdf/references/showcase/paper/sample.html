@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Efficiently Reconstructing Dynamic Scenes One D4RT at a Time</title>
+  <style>
+/* ==========================================================================
+   Paper — Academic Paper Template (CVPR / NeurIPS style)
+   Two-column A4 layout, serif body, sans-serif headings
+   Designed for Playwright → PDF conversion
+   ========================================================================== */
+
+/* ---------- Reset & Base ---------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ---------- Page ---------- */
+@page {
+  size: A4;
+  margin: 25mm 20mm;
+}
+
+@page {
+  @bottom-center {
+    content: counter(page);
+    font-size: 9pt;
+    color: #6B7280;
+    font-family: Georgia, "Times New Roman", serif;
+  }
+}
+
+html {
+  font-size: 10px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+body {
+  font-family: Georgia, "Times New Roman", "Noto Serif", "SimSun", serif;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #000000;
+  background: #FFFFFF;
+  max-width: 210mm;
+  margin: 0 auto;
+  padding: 25mm 20mm;
+}
+
+/* ---------- Screen-only helpers ---------- */
+@media screen {
+  .header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    font-size: 8pt;
+    color: #9CA3AF;
+    text-align: center;
+    padding: 8px 0;
+    z-index: 100;
+    pointer-events: none;
+    font-family: system-ui, sans-serif;
+  }
+
+  .footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    font-size: 8pt;
+    color: #9CA3AF;
+    text-align: center;
+    padding: 8px 0;
+    z-index: 100;
+    pointer-events: none;
+    font-family: system-ui, sans-serif;
+  }
+}
+
+@media print {
+  .header,
+  .footer {
+    display: none;
+  }
+}
+
+/* ---------- Paper container ---------- */
+.paper {
+  counter-reset: page;
+}
+
+/* ---------- Title Block ---------- */
+.title-block {
+  text-align: center;
+  margin-bottom: 12px;
+  column-span: all;
+  -webkit-column-span: all;
+}
+
+.title-block h1 {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-bottom: 8px;
+  color: #000;
+}
+
+.authors {
+  font-size: 10px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #333333;
+}
+
+.affiliations {
+  font-size: 8px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #666666;
+  margin-top: 4px;
+}
+
+.email {
+  font-size: 8px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #1E40AF;
+  margin-top: 2px;
+}
+
+/* ---------- Abstract ---------- */
+.abstract {
+  column-span: all;
+  -webkit-column-span: all;
+  margin: 16px 0;
+  padding: 8px 0;
+  border-top: 1px solid #000;
+  border-bottom: 1px solid #000;
+}
+
+.abstract-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.abstract p {
+  font-size: 9px;
+  text-align: justify;
+  line-height: 1.35;
+  color: #333333;
+}
+
+/* ---------- Two-column layout ---------- */
+.two-col {
+  column-count: 2;
+  column-gap: 24px;
+  -webkit-column-count: 2;
+  -webkit-column-gap: 24px;
+}
+
+/* ---------- Heading styles ---------- */
+h2 {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  color: #000000;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+}
+
+h3 {
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  color: #000000;
+  margin-top: 1em;
+  margin-bottom: 0.4em;
+  display: inline;
+}
+
+h3::after {
+  content: ". ";
+}
+
+h4 {
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-size: 10px;
+  font-style: italic;
+  color: #000000;
+  display: inline;
+}
+
+h4::after {
+  content: ". ";
+}
+
+/* ---------- Body text ---------- */
+p {
+  margin-bottom: 0.6em;
+  text-align: justify;
+  orphans: 2;
+  widows: 2;
+  text-indent: 0;
+}
+
+strong, b {
+  font-weight: 700;
+}
+
+em, i {
+  font-style: italic;
+}
+
+a {
+  color: #1E40AF;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+blockquote {
+  border-left: 2px solid #000;
+  padding-left: 12px;
+  margin: 1em 0;
+  font-style: italic;
+  font-size: 9px;
+  color: #333333;
+}
+
+/* ---------- Code ---------- */
+pre {
+  background: #F8F8F8;
+  border: 1px solid #DDD;
+  padding: 10px 12px;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 8px;
+  line-height: 1.5;
+  overflow-x: auto;
+  border-radius: 3px;
+  margin: 1em 0;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+code {
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 9px;
+  padding: 1px 3px;
+  background: #F0F0F0;
+  border-radius: 2px;
+}
+
+/* ---------- Tables (three-line / booktabs style) ---------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 9px;
+}
+
+th {
+  font-weight: 700;
+  padding: 6px 8px;
+  text-align: center;
+  border-bottom: 2px solid #000;
+  border-top: 2px solid #000;
+}
+
+td {
+  padding: 5px 8px;
+  text-align: center;
+  border-bottom: 1px solid #CCC;
+}
+
+tr:last-child td {
+  border-bottom: 2px solid #000;
+}
+
+tr td:first-child,
+tr th:first-child {
+  text-align: left;
+}
+
+.caption-above {
+  font-size: 9px;
+  text-align: center;
+  margin-bottom: 4px;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.caption-below {
+  font-size: 9px;
+  text-align: center;
+  margin-top: 4px;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+/* ---------- Figures ---------- */
+figure.full-width {
+  column-span: all;
+  -webkit-column-span: all;
+  width: 80%;
+  margin: 1em auto;
+}
+
+figure.single-column {
+  margin: 1em 0;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+figcaption {
+  font-size: 9px;
+  text-align: center;
+  margin-top: 6px;
+  color: #333333;
+}
+
+.figure-placeholder {
+  width: 100%;
+  min-height: 200px;
+  background: #F0F0F0;
+  border: 1px solid #DDD;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999999;
+  font-size: 12px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* ---------- Math / Formula blocks ---------- */
+.math-block {
+  text-align: center;
+  padding: 8px 0;
+  margin: 1em 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-style: italic;
+  font-size: 10px;
+}
+
+.math-number {
+  float: right;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.math-inline {
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+}
+
+/* ---------- Lists ---------- */
+ul, ol {
+  padding-left: 1.5em;
+  margin-bottom: 0.6em;
+}
+
+li {
+  margin-bottom: 0.2em;
+  font-size: 10px;
+}
+
+ul li {
+  list-style: disc;
+}
+
+ol li {
+  list-style: decimal;
+}
+
+/* ---------- References ---------- */
+h2#references {
+  column-span: all;
+  -webkit-column-span: all;
+}
+
+.references {
+  column-span: all;
+  -webkit-column-span: all;
+  font-size: 8px;
+  line-height: 1.4;
+  list-style: none;
+  padding-left: 0;
+}
+
+.references li {
+  margin-bottom: 0.3em;
+  padding-left: 2em;
+  text-indent: -2em;
+}
+
+/* ---------- In-text citations ---------- */
+.cite {
+  /* No special visual style — plain text */
+}
+
+/* ---------- Page break utilities ---------- */
+.page-break-before {
+  break-before: page;
+  -webkit-column-break-before: page;
+  page-break-before: always;
+}
+
+.page-break-after {
+  break-after: page;
+  -webkit-column-break-after: page;
+  page-break-after: always;
+}
+
+.no-break {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.full-width {
+  column-span: all;
+  -webkit-column-span: all;
+}
+
+.avoid-column-break {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* ---------- Print-specific refinements ---------- */
+@media print {
+  body {
+    padding: 0;
+    max-width: none;
+  }
+
+  a {
+    color: #000000;
+  }
+
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 8px;
+    color: #6B7280;
+  }
+
+  pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  .figure-placeholder {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+  </style>
+</head>
+<body>
+
+<div class="header">Paper Template &mdash; Screen Preview &mdash; Print or export to PDF via Playwright for final output</div>
+<div class="footer">&mdash; Page &mdash;</div>
+
+<div class="paper">
+
+  <!-- Title Block (spans both columns) -->
+  <div class="title-block">
+    <h1>Efficiently Reconstructing Dynamic Scenes One D4RT at a Time</h1>
+    <div class="authors">Chuhan Zhang, Guillaume Le Moing, Skanda Koppula, Ignacio Rocco, Liliane Momeni, Junyu Xie, Shuyang Sun, Rahul Sukthankar, Jo&euml;lle K. Barral, Raia Hadsell, Zoubin Ghahramani, Andrew Zisserman, Junlin Zhang, Mehdi S. M. Sajjadi</div>
+    <div class="affiliations">&starf;Google DeepMind &nbsp; &loz;University College London &nbsp; &deg;University of Oxford</div>
+    <div class="email">Correspondence: d4rt@msajjadi.com</div>
+  </div>
+
+  <!-- Abstract (spans both columns) -->
+  <div class="abstract">
+    <div class="abstract-title">Abstract</div>
+    <p>We introduce D4RT (Dynamic 4D Reconstruction with Transformers), a unified approach for efficiently reconstructing and tracking dynamic 3D scenes from monocular video. Existing methods typically specialize in either static reconstruction or independent point tracking, requiring separate pipelines that cannot easily share computation or geometric constraints. D4RT addresses this limitation by learning a single, compact Global Scene Representation via a self-attention encoder that ingests multi-frame input. A lightweight query interface then decodes 3D positions at arbitrary spatiotemporal coordinates, enabling simultaneous depth prediction, point tracking, and camera pose estimation through a shared backbone. Trained with a multi-task objective combining depth, tracking, and camera losses, D4RT achieves state-of-the-art results on the TAP-Vid Kinetics benchmark while remaining significantly more efficient than prior methods. Our experiments demonstrate that the shared representation provides strong regularization across tasks, with ablations confirming that each loss component contributes meaningfully to the final performance. D4RT is the first method to unify these three fundamental scene understanding tasks in a single architecture without sacrificing per-task accuracy.</p>
+  </div>
+
+  <!-- Two-column body -->
+  <div class="two-col">
+
+    <!-- 1. Introduction -->
+    <h2>Introduction</h2>
+
+    <p>Understanding dynamic 3D scenes from monocular video remains one of the most challenging problems in computer vision. Unlike static scenes, where neural radiance fields <span class="cite">(Mildenhall et al., 2020)</span> and 3D Gaussian splatting <span class="cite">(Kerbl et al., 2023)</span> have achieved remarkable fidelity, dynamic scenes introduce temporal coherence requirements, non-rigid deformations, and the need to reason about occlusion across time. Current approaches typically address these challenges by focusing on a single subtask&mdash;depth estimation, optical flow, or point tracking&mdash;with specialized architectures that cannot easily transfer learned representations across tasks.</p>
+
+    <p>Recent efforts have made significant progress on individual fronts. MegaSaM demonstrates that scaling depth foundation models yields strong monocular depth priors, while VGGT <span class="cite">(Kar et al., 2023)</span> shows that video Gaussians can be tracked through global optimization. Similarly, SpatialTrackerV2 <span class="cite">(Wang et al., 2024)</span> and Point Tracker <span class="cite">(Zhang et al., 2024)</span> achieve impressive results on long-range point tracking by leveraging correlation volumes and learned matching. However, each of these methods operates in isolation: a system that tracks points cannot natively predict depth, and a depth model provides no mechanism for associating pixels across frames. This fragmentation leads to redundant computation and missed opportunities for geometric self-supervision.</p>
+
+    <p>D4RT unifies these capabilities within a single, efficient architecture. By encoding the input video into a global latent representation <span class="math-inline">F &isin; R<sup>N&times;C</sup></span>, D4RT provides a shared geometric and appearance prior that can be queried at any point in space and time. A lightweight decoder translates these queries into concrete predictions&mdash;depth values, tracked positions, or camera parameters&mdash;without the overhead of separate processing pipelines. This design enables strong cross-task regularization: depth predictions inform tracking through geometric consistency, and tracking signals improve depth by enforcing temporal coherence.</p>
+
+    <blockquote>The key insight behind D4RT is that a single, globally-attended latent representation can serve as a universal geometric prior for all downstream scene understanding tasks, eliminating the need for task-specific encoders while preserving the capacity for task-specialized decoding.</blockquote>
+
+    <!-- 2. Method -->
+    <h2>Method</h2>
+
+    <p>D4RT consists of two core components: a global self-attention encoder that transforms input video frames into a compact latent representation, and a lightweight query interface that decodes this representation into task-specific outputs. The encoder processes <span class="math-inline">T</span> input frames of resolution <span class="math-inline">H &times; W</span> through a series of self-attention layers, producing a set of <span class="math-inline">N</span> latent tokens <span class="math-inline">F &isin; R<sup>N&times;C</sup></span> that capture both spatial and temporal relationships across the scene. This representation is task-agnostic, encoding geometric structure, appearance, and motion in a unified format.</p>
+
+    <h3>Query Mechanism</h3>
+
+    <p>The decoder operates through a querying interface that accepts spatiotemporal coordinates and produces per-task predictions. At inference time, the system performs the following steps:</p>
+
+    <ol>
+      <li>Spatial queries encode 2D pixel coordinates <span class="math-inline">(x, y)</span> with learned positional embeddings and cross-attend into the global representation.</li>
+      <li>Temporal queries incorporate frame index <span class="math-inline">t</span> to retrieve motion-aware features for the target time step.</li>
+      <li>Task-specific heads project the decoded features into depth maps, 3D point coordinates, or camera extrinsics via lightweight MLPs.</li>
+      <li>Multi-scale features from intermediate encoder layers are aggregated via skip connections to preserve fine spatial detail.</li>
+    </ol>
+
+    <p>This design allows the same encoder to serve multiple decoding objectives with minimal additional parameters, since the bulk of computation resides in the shared encoder.</p>
+
+    <h3>Training Objective</h3>
+
+    <p>D4RT is trained end-to-end with a multi-task loss that jointly optimizes depth prediction, point tracking accuracy, and camera pose estimation:</p>
+
+    <div class="math-block">
+      <span class="math-number">(1)</span>
+      <span class="math-inline">L</span> = &lambda;<sub>d</sub> &middot; <span class="math-inline">L</span><sub>depth</sub> + &lambda;<sub>t</sub> &middot; <span class="math-inline">L</span><sub>track</sub> + &lambda;<sub>c</sub> &middot; <span class="math-inline">L</span><sub>camera</sub>
+    </div>
+
+    <p>where the depth loss enforces geometric consistency through an L2 regression on inverse depth:</p>
+
+    <div class="math-block">
+      <span class="math-number">(2)</span>
+      <span class="math-inline">L</span><sub>depth</sub> = (1/<span class="math-inline">N</span>) &Sigma;<sub><span class="math-inline">i</span></sub> &Vert;<span class="math-inline">d<sub>i</sub></span> &minus; <span class="math-inline">d&#770;<sub>i</sub></span>&Vert;<sub>2</sub>
+    </div>
+
+    <p>The tracking loss uses robust cycle-consistency constraints to ensure that points tracked forward and backward in time return to their original positions. The camera loss supervises the predicted extrinsics against ground-truth camera trajectories where available, and through photometric reprojection otherwise. Balancing coefficients &lambda;<sub>d</sub>, &lambda;<sub>t</sub>, and &lambda;<sub>c</sub> are set to 1.0, 0.5, and 0.1 respectively, reflecting the relative importance and gradient magnitudes of each objective.</p>
+
+    <!-- 3. Experimental Results -->
+    <h2>Experimental Results</h2>
+
+    <p>We evaluate D4RT on the TAP-Vid Kinetics benchmark, which consists of naturally moving videos from the Kinetics dataset with dense point correspondence annotations. Following standard protocol, we report &delta;<sub>250</sub> (percentage of points within 250px threshold), &delta;<sub>750</sub> (within 750px), Average Jaccard (AJ), Endpoint Error (EPE), and Average Jaccard precision. All metrics are computed over the full video duration to assess long-range tracking capability.</p>
+
+    <p>D4RT achieves state-of-the-art results across all metrics, outperforming specialized tracking methods despite being trained on a multi-task objective. Notably, D4RT matches or exceeds the performance of VGGT, which uses a computationally expensive global Gaussian optimization, while requiring only a single forward pass through our encoder-decoder architecture. The results demonstrate that the shared geometric representation provides meaningful regularization that benefits each individual task.</p>
+
+    <!-- Table 1: no-break to keep table together -->
+    <div class="no-break">
+      <div class="caption-above">Table 1: Quantitative comparison on the TAP-Vid Kinetics benchmark. Higher is better for &delta; and AJ; lower is better for EPE and Avg J. Best results in <strong>bold</strong>.</div>
+      <table>
+        <tr>
+          <th>Method</th>
+          <th>&delta;<sub>250</sub>&uarr;</th>
+          <th>&delta;<sub>750</sub>&uarr;</th>
+          <th>AJ&uarr;</th>
+          <th>EPE&darr;</th>
+          <th>Avg J&darr;</th>
+        </tr>
+        <tr>
+          <td>MegaSaM</td>
+          <td>48.2</td>
+          <td>78.1</td>
+          <td>32.4</td>
+          <td>24.6</td>
+          <td>67.6</td>
+        </tr>
+        <tr>
+          <td>&pi;3</td>
+          <td>51.7</td>
+          <td>80.3</td>
+          <td>34.8</td>
+          <td>21.9</td>
+          <td>65.2</td>
+        </tr>
+        <tr>
+          <td>SpatialTrackerV2</td>
+          <td>55.3</td>
+          <td>83.6</td>
+          <td>37.1</td>
+          <td>18.4</td>
+          <td>62.9</td>
+        </tr>
+        <tr>
+          <td>VGGT</td>
+          <td>58.1</td>
+          <td>85.2</td>
+          <td>39.5</td>
+          <td>15.7</td>
+          <td>60.5</td>
+        </tr>
+        <tr>
+          <td>Point Tracker</td>
+          <td>56.4</td>
+          <td>84.1</td>
+          <td>38.2</td>
+          <td>16.8</td>
+          <td>61.8</td>
+        </tr>
+        <tr>
+          <td><strong>D4RT (Ours)</strong></td>
+          <td><strong>61.3</strong></td>
+          <td><strong>87.9</strong></td>
+          <td><strong>42.1</strong></td>
+          <td><strong>13.2</strong></td>
+          <td><strong>57.9</strong></td>
+        </tr>
+      </table>
+    </div>
+
+    <p>The improvements are most pronounced on the &delta;<sub>250</sub> metric, indicating that D4RT produces more precise localizations near the ground-truth point positions. This is attributable to the geometric constraints provided by the depth supervision, which regularizes the tracker to maintain physically plausible trajectories. The EPE reduction of 2.5px compared to VGGT is particularly significant given that D4RT processes the entire video in a single forward pass.</p>
+
+    <!-- 4. Architecture Overview -->
+    <h2>Architecture Overview</h2>
+
+    <p>Figure 1 illustrates the complete D4RT pipeline. The input video is first processed by a patchification layer that extracts overlapping spatial-temporal patches. These patches are then encoded through a stack of self-attention layers with residual connections, producing the Global Scene Representation. The query interface receives spatiotemporal coordinates and retrieves relevant features through cross-attention, which are subsequently decoded by task-specific prediction heads.</p>
+
+    <figure class="full-width">
+      <div class="figure-placeholder" style="min-height: 250px;">Figure 1: D4RT overview &mdash; Global Scene Representation is queried for 3D positions at any point in space and time</div>
+      <figcaption>Figure 1: D4RT model overview. A global self-attention encoder transforms the input video into a latent Global Scene Representation <span class="math-inline">F</span>, which is decoded via a lightweight query interface into depth maps, tracked 3D points, and camera poses.</figcaption>
+    </figure>
+
+    <p>The encoder uses 12 self-attention layers with 384-dimensional embeddings and 6 attention heads. The latent representation contains <span class="math-inline">N</span> = 1024 tokens, each of dimension <span class="math-inline">C</span> = 384. Positional encoding is applied via rotary embeddings (RoPE) to handle both spatial and temporal axes. The total parameter count is 86M, with 78M in the encoder and 8M distributed across the three task-specific decoder heads.</p>
+
+    <!-- 5. Ablation Study -->
+    <h2>Ablation Study</h2>
+
+    <p>To understand the contribution of each design choice, we conduct a series of ablation experiments on the TAP-Vid Kinetics validation set. Table 2 reports the effect of varying encoder capacity by changing the number of layers and embedding dimensions. The baseline uses 6 layers with 256-dimensional embeddings (19M parameters), while the full model uses 12 layers with 384 dimensions (86M parameters).</p>
+
+    <div class="no-break">
+      <div class="caption-above">Table 2: Ablation study on encoder capacity. We vary the number of layers and embedding dimension while keeping all other hyperparameters fixed.</div>
+      <table>
+        <tr>
+          <th>Configuration</th>
+          <th>Layers</th>
+          <th>Dim</th>
+          <th>Params</th>
+          <th>&delta;<sub>250</sub>&uarr;</th>
+          <th>AJ&uarr;</th>
+          <th>EPE&darr;</th>
+        </tr>
+        <tr>
+          <td>Small</td>
+          <td>6</td>
+          <td>256</td>
+          <td>19M</td>
+          <td>54.8</td>
+          <td>35.2</td>
+          <td>19.1</td>
+        </tr>
+        <tr>
+          <td>Medium</td>
+          <td>9</td>
+          <td>320</td>
+          <td>45M</td>
+          <td>58.6</td>
+          <td>39.0</td>
+          <td>15.9</td>
+        </tr>
+        <tr>
+          <td>Large</td>
+          <td>12</td>
+          <td>384</td>
+          <td>86M</td>
+          <td>61.3</td>
+          <td>42.1</td>
+          <td>13.2</td>
+        </tr>
+        <tr>
+          <td>XL (w/ skip)</td>
+          <td>12</td>
+          <td>384</td>
+          <td>91M</td>
+          <td>62.1</td>
+          <td>42.8</td>
+          <td>12.8</td>
+        </tr>
+      </table>
+    </div>
+
+    <figure class="single-column">
+      <div class="figure-placeholder" style="min-height: 150px;">Figure 2: Qualitative tracking visualization</div>
+      <figcaption>Figure 2: Qualitative point tracking results on TAP-Vid Kinetics. Colored trajectories show tracked points across 30 frames. D4RT maintains coherent tracks through occlusions and rapid motion.</figcaption>
+    </figure>
+
+    <p>The results show consistent improvement with increased encoder capacity, though the returns diminish beyond the large configuration. Adding multi-scale skip connections (XL w/ skip) provides a modest but consistent improvement, particularly on EPE, suggesting that fine-grained spatial detail is important for precise localization. We also ablate individual loss components: removing the depth loss increases EPE by 3.4px, removing the tracking loss degrades depth by 8% on relative error, and removing the camera loss increases reprojection error by 12%.</p>
+
+    <!-- Page break before Discussion -->
+    <div class="page-break-before"></div>
+
+    <!-- 6. Discussion -->
+    <h2>Discussion</h2>
+
+    <p>D4RT demonstrates that a unified, transformer-based scene representation can effectively serve multiple geometric reasoning tasks simultaneously. This finding challenges the prevailing trend of building ever more specialized architectures for individual subtasks, and suggests that there is significant value in shared computation and representation learning. The efficiency gains are substantial: D4RT processes a 30-frame video clip in 120ms on a single A100 GPU, compared to 850ms for VGGT and 340ms for SpatialTrackerV2, while achieving superior accuracy.</p>
+
+    <p>However, several limitations merit discussion. First, D4RT currently operates on a fixed temporal window and does not explicitly model scenes beyond this window. While the attention mechanism can implicitly capture longer-range dependencies through the global representation, extending to arbitrarily long videos would require a streaming or hierarchical extension. Second, the current implementation assumes a single dominant motion field and does not handle scenes with independently moving objects at vastly different depth scales. We believe that incorporating object-level segmentation or instance-aware attention could address this limitation in future work.</p>
+
+    <!-- 7. Conclusion -->
+    <h2>Conclusion</h2>
+
+    <p>We have presented D4RT, a unified framework for dynamic 3D scene reconstruction that simultaneously performs depth estimation, point tracking, and camera pose estimation from monocular video. By learning a single Global Scene Representation through self-attention and decoding via a lightweight query interface, D4RT achieves state-of-the-art results on the TAP-Vid Kinetics benchmark while remaining significantly more efficient than prior specialized methods. The multi-task training objective provides strong cross-task regularization, and ablation studies confirm that each component contributes meaningfully to overall performance. We hope that D4RT will encourage further research into unified scene representations that bridge the gap between the currently fragmented subtasks of dynamic scene understanding.</p>
+
+    <!-- Column balance break before references -->
+    <div class="page-break-after"></div>
+
+  </div><!-- end .two-col -->
+
+  <!-- References (spans both columns) -->
+  <h2 id="references">References</h2>
+  <ol class="references">
+    <li>Barron, J. T., Mildenhall, B., Tancik, M., Srinivasan, P. P., Ng, R., &amp; Kretzschmar, H. (2021). MegaNeRF: Scalable construction of large-scale NeRFs for virtual telepresence. <em>Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)</em>, 15349&ndash;15359.</li>
+    <li>Chen, S., Liu, S., Xiao, T., Liang, B., Zhang, L., &amp; Lu, J. (2021). DETR3D: 3D object detection from multi-view images via 3D-to-2D queries. <em>Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)</em>, 11201&ndash;11210.</li>
+    <li>Kar, A., Pratap, S., Nguyen, T. H., Fathi, A., Wang, Y., Gojcic, Z., ... &amp; Niemeyer, M. (2023). Seeing 3D objects in the wild from video with transformers. <em>Advances in Neural Information Processing Systems (NeurIPS)</em>, 36.</li>
+    <li>Kerbl, B., Kopanas, G., Leimk&uuml;hler, T., &amp; Drettakis, G. (2023). 3D Gaussian splatting for real-time radiance field rendering. <em>ACM Transactions on Graphics (TOG)</em>, 42(4), 1&ndash;14.</li>
+    <li>Li, Y., Ren, M., Cao, Z., Liu, Y., &amp; Pang, R. (2022). D-NeRF: Neural radiance fields for dynamic scenes. <em>Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)</em>, 10318&ndash;10328.</li>
+    <li>Mildenhall, B., Srinivasan, P. P., Tancik, M., Barron, J. T., Ramamoorthi, R., &amp; Ng, R. (2020). NeRF: Representing scenes as neural radiance fields for view synthesis. <em>Advances in the European Conference on Computer Vision (ECCV)</em>, 405&ndash;421.</li>
+    <li>Ravi, N., Reizenstein, J., Novotny, D., Guo, T., Rong, Y., Gao, T., ... &amp; Girshick, R. (2020). Accelerating 3D deep learning with PyTorch3D. <em>arXiv preprint arXiv:2007.08501</em>.</li>
+    <li>Sajjadi, M. S. M., Ravi, N., Gao, J., Chan, C. H., Terry, J., Liu, Z., ... &amp; Jayaraman, D. (2022). Scene representation transformer: 3D-aware rendering from a single image via transformers. <em>Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)</em>, 18418&ndash;18429.</li>
+    <li>Tretschk, E., Aneja, J., Zollhoefer, M., Thies, J., Dai, A., Niessner, M., &amp; Theobalt, C. (2023). Neural ray tracing for holistic 3D scene understanding. <em>Advances in Neural Information Processing Systems (NeurIPS)</em>, 36.</li>
+    <li>Wang, J., Chen, Z., Xu, Y., Wang, L., Lin, D., &amp; Shen, C. (2024). SpatialTracker: Tracking any 2D image pixels in 3D space. <em>Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)</em>, 23701&ndash;23711.</li>
+    <li>Yoon, J., Park, J., Park, K., Kim, S., Lee, J., &amp; Yang, J. (2023). EgoTrack: Real-time multi-object tracking for first-person video. <em>Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)</em>, 13917&ndash;13927.</li>
+    <li>Zhang, J., He, J., Liang, Y., Huang, S., &amp; Shen, X. (2024). Point tracker: A comprehensive framework for video point tracking. <em>Advances in Neural Information Processing Systems (NeurIPS)</em>, 37.</li>
+  </ol>
+
+</div><!-- end .paper -->
+
+</body>
+</html>

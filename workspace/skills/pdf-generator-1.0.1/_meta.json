@@ -1,9 +1,0 @@
-{
-  "slug": "pdf-generator",
-  "version": "1.0.1",
-  "scripts": [
-    "scripts/create.py",
-    "scripts/view.py",
-    "scripts/edit.py"
-  ]
-}
