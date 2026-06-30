@@ -1,20 +1,69 @@
 /**
- * Sessions store — owns the list of conversations, active selection,
- * and CRUD operations. Persistence is added in Phase 4.
+ * Sessions store — 会话列表、当前选中、CRUD。
+ *
+ * 持久化到 StorageAdapter（Tauri→plugin-store / Web→IndexedDB）。
+ * isLoaded 标志供路由守卫等待加载完成，避免组件读到空列表闪烁。
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Session } from '@/types/domain'
+import { getStorage } from '@/lib/storage'
 
-function uid() {
+const STORAGE_KEY = 'sessions'
+
+/** 允许更新的字段，排除不可变字段 id / createdAt。 */
+export type SessionPatch = Partial<Omit<Session, 'id' | 'createdAt'>>
+
+function uid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return 's_' + crypto.randomUUID()
+  }
   return 's_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
 
 export const useSessionsStore = defineStore('sessions', () => {
+  const storage = getStorage()
   const list = ref<Session[]>([])
   const activeId = ref<string | null>(null)
+  const isLoaded = ref(false)
 
   const active = computed(() => list.value.find((s) => s.id === activeId.value) ?? null)
+
+  function isSession(v: unknown): v is Session {
+    if (typeof v !== 'object' || v === null) return false
+    const o = v as Record<string, unknown>
+    return (
+      typeof o.id === 'string' &&
+      typeof o.title === 'string' &&
+      typeof o.createdAt === 'number' &&
+      typeof o.updatedAt === 'number' &&
+      typeof o.messageCount === 'number'
+    )
+  }
+
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** debounce 持久化，load 完成前不写盘。 */
+  function scheduleSave() {
+    if (!isLoaded.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      void storage.set(STORAGE_KEY, list.value)
+    }, 300)
+  }
+
+  async function load() {
+    try {
+      const raw = await storage.get<unknown>(STORAGE_KEY)
+      if (Array.isArray(raw) && raw.every(isSession)) {
+        list.value = raw
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      isLoaded.value = true
+    }
+  }
 
   function create(): Session {
     const now = Date.now()
@@ -27,6 +76,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
     list.value.unshift(session)
     activeId.value = session.id
+    scheduleSave()
     return session
   }
 
@@ -37,27 +87,32 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function remove(id: string) {
+    const idx = list.value.findIndex((s) => s.id === id)
     list.value = list.value.filter((s) => s.id !== id)
-    if (activeId.value === id) activeId.value = list.value[0]?.id ?? null
+    if (activeId.value === id) {
+      // 回退到相邻兄弟而非列表头部，更符合用户预期
+      const next = list.value[idx] ?? list.value[idx - 1] ?? null
+      activeId.value = next?.id ?? null
+    }
+    scheduleSave()
   }
 
   function rename(id: string, title: string) {
     const s = list.value.find((x) => x.id === id)
     if (!s) return
     const trimmed = title.trim() || '新对话'
+    if (s.title === trimmed) return
     s.title = trimmed
     s.updatedAt = Date.now()
+    scheduleSave()
   }
 
-  function touch(id: string, patch: Partial<Session> = {}) {
+  function touch(id: string, patch: SessionPatch = {}) {
     const s = list.value.find((x) => x.id === id)
     if (!s) return
     Object.assign(s, patch, { updatedAt: Date.now() })
+    scheduleSave()
   }
 
-  function load() {
-    // Phase 4 will hydrate from IndexedDB / Tauri Store.
-  }
-
-  return { list, activeId, active, create, activate, remove, rename, touch, load }
+  return { list, activeId, active, isLoaded, create, activate, remove, rename, touch, load }
 })

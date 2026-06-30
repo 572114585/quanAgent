@@ -4,13 +4,43 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, Attachment, ArtifactFile } from '@/types/domain'
+import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus } from '@/types/domain'
 import { sendChatMessage, resumeChat } from '@/api/chat'
 
 export type ChatMessage = Message
 
 function uid(prefix = 'm') {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36)}`
+}
+
+/**
+ * 从 write_todos 工具调用的 args 中解析 todo 列表。
+ * args 可能为 string(JSON) 或 object，todos 字段是完整的任务列表（每次调用整体替换）。
+ * 解析失败返回 null（不更新现有 todo）。
+ */
+function parseTodosFromArgs(args: string | Record<string, any> | undefined): TodoItem[] | null {
+  if (!args) return null
+  let obj: any
+  if (typeof args === 'string') {
+    try {
+      obj = JSON.parse(args)
+    } catch {
+      return null
+    }
+  } else {
+    obj = args
+  }
+  const raw = obj?.todos
+  if (!Array.isArray(raw)) return null
+  const validStatuses: TodoStatus[] = ['pending', 'in_progress', 'completed']
+  const todos: TodoItem[] = []
+  for (const item of raw) {
+    if (item && typeof item === 'object' && typeof item.content === 'string') {
+      const status: TodoStatus = validStatuses.includes(item.status) ? item.status : 'pending'
+      todos.push({ content: item.content, status })
+    }
+  }
+  return todos
 }
 
 interface SendOptions {
@@ -24,6 +54,8 @@ export const useChatStore = defineStore('chat', () => {
   const aborters = ref<Record<string, AbortController | null>>({})
   /** Phase 3 placeholder: 上传中的文件。Phase 4/5 进一步持久化。 */
   const pendingAttachments = ref<Record<string, Attachment[]>>({})
+  /** Agent 通过 write_todos 工具维护的待办列表（按 session 存储，整体替换语义）。 */
+  const todosBySession = ref<Record<string, TodoItem[]>>({})
 
   function list(sessionId: string): ChatMessage[] {
     return messagesBySession.value[sessionId] ?? []
@@ -224,6 +256,13 @@ export const useChatStore = defineStore('chat', () => {
             })
           },
           onToolCall: (call) => {
+            // write_todos 工具：解析 args.todos 更新 session 级待办列表，
+            // 不进入 toolCalls 数组（升级为专门悬浮 UI，避免重复显示）
+            if (call.name === 'write_todos') {
+              const todos = parseTodosFromArgs(call.args)
+              if (todos) todosBySession.value[sessionId] = todos
+              return
+            }
             // 新协议：工具开始 → 进入 toolCalls 数组（独立于最终答案）
             if (!msg.toolCalls) msg.toolCalls = []
             msg.toolCalls.push({
@@ -235,6 +274,8 @@ export const useChatStore = defineStore('chat', () => {
           },
           onToolResult: (payload) => {
             // 新协议：工具返回 → 补全对应条目
+            // write_todos 已在 onToolCall 处理，跳过避免新建记录污染工具列表
+            if (payload.name === 'write_todos') return
             if (!msg.toolCalls) return
             let record = payload.callId
               ? msg.toolCalls.find((tc) => tc.id === payload.callId)
@@ -356,6 +397,12 @@ export const useChatStore = defineStore('chat', () => {
           })
         },
         onToolCall: (call) => {
+          // write_todos：解析更新待办列表，不进入 toolCalls（与 send 保持一致）
+          if (call.name === 'write_todos') {
+            const todos = parseTodosFromArgs(call.args)
+            if (todos) todosBySession.value[sessionId] = todos
+            return
+          }
           if (!msg.toolCalls) msg.toolCalls = []
           msg.toolCalls.push({
             id: call.callId ?? uid('tc'),
@@ -365,6 +412,8 @@ export const useChatStore = defineStore('chat', () => {
           })
         },
         onToolResult: (payload) => {
+          // write_todos 已在 onToolCall 处理，跳过避免新建记录污染工具列表
+          if (payload.name === 'write_todos') return
           if (!msg.toolCalls) return
           let record = payload.callId
             ? msg.toolCalls.find((tc) => tc.id === payload.callId)
@@ -459,9 +508,15 @@ export const useChatStore = defineStore('chat', () => {
     return out
   }
 
+  /** 清空指定 session 的待办列表（如切换/清空会话时） */
+  function clearTodos(sessionId: string) {
+    delete todosBySession.value[sessionId]
+  }
+
   return {
     messagesBySession,
     pendingAttachments,
+    todosBySession,
     list,
     append,
     setStatus,
@@ -471,6 +526,7 @@ export const useChatStore = defineStore('chat', () => {
     addToolCall,
     updateToolResult,
     clear,
+    clearTodos,
     stop,
     send,
     resume,

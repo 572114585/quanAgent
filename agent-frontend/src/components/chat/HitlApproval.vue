@@ -38,15 +38,15 @@ function rejectAll() {
 
 <template>
   <div
-    class="mt-3 rounded-xl border-2 border-warning/40 bg-warning/5 overflow-hidden"
+    class="rounded-xl border border-border bg-surface-elevated/95 backdrop-blur-md overflow-hidden"
   >
-    <div class="px-4 py-2.5 flex items-center gap-2 border-b border-warning/20">
+    <div class="px-4 py-2.5 flex items-center gap-2 border-b border-border">
       <Wrench class="size-4 text-warning shrink-0" />
       <span class="text-sm font-medium text-ink">工具调用需要你的批准</span>
       <span class="text-xs text-ink-subtle ml-auto">{{ toolCalls.length }} 项</span>
     </div>
 
-    <div class="divide-y divide-warning/20">
+    <div class="divide-y divide-border">
       <div v-for="(tc, i) in toolCalls" :key="i" class="px-4 py-2.5">
         <div class="flex items-baseline gap-2">
           <code
@@ -61,7 +61,7 @@ function rejectAll() {
       </div>
     </div>
 
-    <div class="px-4 py-2.5 flex items-center gap-2 bg-warning/5 border-t border-warning/20">
+    <div class="px-4 py-2.5 flex items-center gap-2 bg-surface-muted/40 border-t border-border">
       <button
         class="btn-outline text-xs px-3 py-1.5"
         :disabled="disabled"

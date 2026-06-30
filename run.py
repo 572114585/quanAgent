@@ -73,11 +73,12 @@ from ducktools import web_search  # noqa: E402
 from time_tools import get_current_time  # noqa: E402
 
 try:
-    from langfuse.langchain import CallbackHandler
+    from langfuse.langchain import CallbackHandler as _LangfuseCallbackHandler
 
-    _langfuse_handler = CallbackHandler()
+    _langfuse_available = True
 except Exception:  # langfuse 未配置时降级
-    _langfuse_handler = None
+    _LangfuseCallbackHandler = None
+    _langfuse_available = False
 
 
 # === 日志 ===
@@ -303,14 +304,68 @@ def _sse(payload: dict) -> dict:
     return {"event": "message", "data": json.dumps(payload, ensure_ascii=False)}
 
 
-def _build_config(session_id: str, run_name: str) -> dict:
+def _open_langfuse_trace(session_id: str, run_name: str):
+    """为本次请求开一个 langfuse 根 trace，返回 (config, trace_context_or_None)。
+
+    关键点：langfuse v4 的 CallbackHandler 默认会把每个 langchain/langgraph 顶层
+    chain 都当成独立 trace，于是 HumanInTheLoop/Resume/Tools 都飘在外面成一棵棵
+    独立 trace，看起来像「跟踪断开」。修复方法：先用 client.start_as_current_observation
+    显式建一个根 trace，再把 CallbackHandler 用 trace_context 锚到这个根上，
+    所有子事件就都挂到这根 trace 下了。
+
+    返回的 (cfg, trace_ctx) 配合使用：
+      cfg  → 传给 astream()
+      trace_ctx → 配合 client.start_as_current_observation(**trace_ctx) 作为
+                  context manager 包住整个 stream，stream 结束自动 end 根。
+    """
     cfg: dict = {
         "configurable": {"thread_id": session_id},
         "run_name": run_name,
+        # 同一会话的多次请求（含 HITL resume）通过 langfuse_session_id 归并到
+        # langfuse UI 的同一个 session 视图。
+        "metadata": {
+            "langfuse_session_id": session_id,
+            "langfuse_tags": ["deepagents", "web"],
+        },
     }
-    if _langfuse_handler is not None:
-        cfg["callbacks"] = [_langfuse_handler]
-    return cfg
+    if not _langfuse_available:
+        return cfg, None
+
+    from langfuse import get_client
+
+    client = get_client()
+    # 先用 start_observation 拿一个真实 trace_id（必须是 langfuse 自己的 hex，
+    # 不能随机造）。CallbackHandler 拿到这个 trace_id 后会把所有根/子 run
+    # 都挂到它下面（见 CallbackHandler._take_root_trace_context 源码），
+    # 这就解决了 HumanInTheLoop/Resume/Tools 等子图 run 各自飘出顶层 trace
+    # 的问题。
+    obs = client.start_observation(
+        name=run_name,
+        as_type="span",
+        metadata={"session_id": session_id, "tags": ["deepagents", "web"]},
+    )
+    trace_id = obs.trace_id
+    # 立刻 end 这个空根：真正的事件由 CallbackHandler 透过 trace_context 挂进来
+    # —— handler 会用同名 trace_id 在事件到达时建/接管这个 trace 的 span 树。
+    obs.end()
+    cfg["callbacks"] = [_LangfuseCallbackHandler(trace_context={"trace_id": trace_id})]
+    return cfg, trace_id
+
+
+def _build_config(session_id: str, run_name: str) -> dict:
+    """兼容旧调用方：只构造 config，不开 langfuse 根 trace。
+
+    根 trace 由 _stream_with_artifacts 入口的 _open_langfuse_trace 统一开，
+    保证整次 SSE 流（含 aget_state / artifact 检测）都在同一根 trace 下。
+    """
+    return {
+        "configurable": {"thread_id": session_id},
+        "run_name": run_name,
+        "metadata": {
+            "langfuse_session_id": session_id,
+            "langfuse_tags": ["deepagents", "web"],
+        },
+    }
 
 
 async def _stream_agent(
@@ -557,6 +612,15 @@ async def _stream_with_artifacts(
             yield _sse({"type": "artifact", **art})
         if new_artifacts:
             logger.info("Detected %d new artifact(s) in output/", len(new_artifacts))
+        # 显式 flush langfuse，避免 done 已经推给前端、langfuse trace 还在本地
+        # 排队导致 UI 上「跟踪断开」的感觉。
+        if _langfuse_available:
+            try:
+                from langfuse import get_client
+
+                get_client().flush()
+            except Exception:
+                logger.debug("langfuse flush failed", exc_info=True)
         yield done_evt
 
 
@@ -626,7 +690,7 @@ async def chat(req: ChatRequest):
             content={"message": str(e)},
         )
     message_id = str(uuid.uuid4())
-    config = _build_config(req.sessionId, f"chat:{req.message[:20]}")
+    config, _trace_id = _open_langfuse_trace(req.sessionId, f"chat:{req.message[:20]}")
     logger.info(
         "chat session=%s msg=%r attachments=%d",
         req.sessionId,
@@ -657,7 +721,7 @@ async def resume(req: ResumeRequest):
             content={"message": str(e)},
         )
     message_id = str(uuid.uuid4())
-    config = _build_config(req.sessionId, f"resume:{req.sessionId[:8]}")
+    config, _trace_id = _open_langfuse_trace(req.sessionId, f"resume:{req.sessionId[:8]}")
     logger.info("resume session=%s decisions=%s", req.sessionId, req.decisions)
 
     async def event_stream() -> AsyncGenerator[dict, None]:

@@ -91,6 +91,14 @@ export interface ArtifactFile {
   size: number
 }
 
+/** Agent 通过 write_todos 工具维护的待办项（与 deepagents TodoListMiddleware 对齐） */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+
+export interface TodoItem {
+  content: string
+  status: TodoStatus
+}
+
 export type StreamEvent =
   | { type: 'start'; messageId: string }
   /** 最终答案的 token 增量 —— 进入 message.content */

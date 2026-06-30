@@ -2,8 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain, Wrench, ChevronRight } from 'lucide-vue-next'
 import { useMarkdown } from '@/composables/useMarkdown'
-import type { ToolCallRequest, ToolCallRecord, ArtifactFile } from '@/types/domain'
-import HitlApproval from './HitlApproval.vue'
+import type { ToolCallRecord, ArtifactFile } from '@/types/domain'
 import FileAttachment from './FileAttachment.vue'
 
 const props = defineProps<{
@@ -19,13 +18,11 @@ const props = defineProps<{
   error?: string
   attachments?: Array<{ id: string; name: string; mime: string; size: number; previewUrl?: string; remoteUrl?: string }>
   artifacts?: ArtifactFile[]
-  pendingToolCalls?: ToolCallRequest[]
   canRegenerate?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'regenerate'): void
-  (e: 'decide', decisions: Array<{ type: 'approve' | 'reject' }>): void
 }>()
 
 const contentRef = computed(() => props.content)
@@ -91,25 +88,38 @@ function toggleThinking() {
   thinkingExpanded.value = !thinkingExpanded.value
 }
 
-/** 单条工具调用默认是否展开（仅 running 时展开，completed 后折叠） */
+/**
+ * 单条工具调用展开状态：
+ * - running / pending → 自动展开（强制）
+ * - completed / failed → 自动折叠，但用户可点击头部手动展开查看历史
+ *
+ * 用「manuallyToggledIds」记录用户手动切换过的 id，
+ * 对这些 id 尊重用户选择；未手动操作过的 completed id 保持折叠。
+ */
 const expandedToolIds = ref<Set<string>>(new Set())
+const manuallyToggledIds = ref<Set<string>>(new Set())
 watch(
   () => props.toolCalls?.map((t) => `${t.id}:${t.status}`).join(',') ?? '',
   () => {
-    // 新的 running 工具自动展开；状态变 completed 不强制折叠（保持用户选择）
     for (const tc of props.toolCalls ?? []) {
+      if (manuallyToggledIds.value.has(tc.id)) continue
       if (tc.status === 'running' || tc.status === 'pending') {
         expandedToolIds.value.add(tc.id)
+      } else {
+        // completed / failed → 自动折叠
+        expandedToolIds.value.delete(tc.id)
       }
     }
+    expandedToolIds.value = new Set(expandedToolIds.value)
   },
   { immediate: true }
 )
 function toggleToolCall(id: string) {
+  manuallyToggledIds.value.add(id)
   if (expandedToolIds.value.has(id)) expandedToolIds.value.delete(id)
   else expandedToolIds.value.add(id)
-  // 触发响应式更新
   expandedToolIds.value = new Set(expandedToolIds.value)
+  manuallyToggledIds.value = new Set(manuallyToggledIds.value)
 }
 
 function formatArgs(args: string | Record<string, any> | undefined): string {
@@ -232,15 +242,10 @@ async function copy() {
         class="rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words bg-surface-elevated text-ink border border-border"
       >
         <div v-if="hasContent" class="markdown-body" v-html="html" />
-        <div v-else class="flex items-center gap-1 text-ink-subtle text-xs">
-          <Sparkles class="size-3.5" />
-          <span>正在请求工具调用…</span>
+        <div class="flex items-center gap-1 text-ink-subtle text-xs">
+          <Wrench class="size-3.5 animate-pulse text-warning" />
+          <span>等待工具调用审批…</span>
         </div>
-        <HitlApproval
-          v-if="pendingToolCalls && pendingToolCalls.length > 0"
-          :tool-calls="pendingToolCalls"
-          @decide="(d) => emit('decide', d)"
-        />
       </div>
 
       <!-- User message bubble (contains attachments + text) -->
@@ -286,7 +291,7 @@ async function copy() {
         class="w-full"
       >
         <!-- Thinking section -->
-        <div v-if="shouldShowThinking" class="mb-2">
+        <div v-if="shouldShowThinking || isActivelyThinking" class="mb-2">
           <button
             @click="toggleThinking"
             class="flex items-center gap-1.5 text-xs text-ink-subtle hover:text-ink transition-colors py-1 px-1 rounded-md"
@@ -359,24 +364,18 @@ async function copy() {
           </div>
         </div>
 
-        <!-- Final answer section -->
-        <div
-          class="rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words bg-surface-elevated text-ink border border-border"
-        >
-          <div v-if="hasContent" class="markdown-body" v-html="html" />
-          <span
-            v-else-if="!isActivelyThinking || !shouldShowThinking"
-            class="inline-flex items-center gap-1 text-ink-subtle"
+        <!-- Final answer section：仅在有内容时才渲染空状态卡片，避免思考阶段出现空壳 -->
+        <template v-if="hasContent">
+          <div
+            class="rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words bg-surface-elevated text-ink border border-border"
           >
-            <span class="size-1.5 rounded-full bg-ink-subtle animate-pulse-dot" />
-            <span class="size-1.5 rounded-full bg-ink-subtle animate-pulse-dot" style="animation-delay: 0.2s" />
-            <span class="size-1.5 rounded-full bg-ink-subtle animate-pulse-dot" style="animation-delay: 0.4s" />
-          </span>
-          <span
-            v-if="isStreaming && hasContent"
-            class="inline-block w-0.5 h-4 bg-ink ml-0.5 align-middle animate-pulse"
-          />
-        </div>
+            <div class="markdown-body" v-html="html" />
+            <span
+              v-if="isStreaming"
+              class="inline-block w-0.5 h-4 bg-ink ml-0.1 align-middle animate-pulse"
+            />
+          </div>
+        </template>
       </div>
 
       <!-- Artifacts (assistant generated files) -->

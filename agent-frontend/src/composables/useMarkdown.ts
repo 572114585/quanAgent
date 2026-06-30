@@ -4,11 +4,22 @@
  * The highlighter caches a small set of common languages.
  */
 import { Marked } from 'marked'
+import DOMPurify, { type Config } from 'dompurify'
 import { computed, ref, watch, type Ref } from 'vue'
+import type { HighlighterCore } from 'shiki/core'
 import { useTheme } from './useTheme'
 
-let highlighterPromise: Promise<any> | null = null
+let highlighterPromise: Promise<HighlighterCore> | null = null
 let markedInstance: Marked | null = null
+
+/**
+ * DOMPurify 配置：保留 shiki 输出所需的 data-lang / style / tabindex，
+ * 其余按默认策略（移除 script/iframe/on* 事件/javascript: 协议等）。
+ */
+const SANITIZE_CONFIG: Config = {
+  ADD_ATTR: ['data-lang', 'style', 'tabindex'],
+  ALLOW_DATA_ATTR: true
+}
 
 function getMarked(): Marked {
   if (!markedInstance) {
@@ -21,7 +32,7 @@ function getMarked(): Marked {
         code({ text, lang }: { text: string; lang?: string }) {
           const langStr = (lang || '').trim().split(/\s+/)[0] || 'text'
           const code = escapeHtml(text)
-          return `<pre class="shiki-fallback" data-lang="${langStr}"><code>${code}</code></pre>`
+          return `<pre class="shiki-fallback" data-lang="${escapeHtml(langStr)}"><code>${code}</code></pre>`
         }
       }
     })
@@ -29,7 +40,7 @@ function getMarked(): Marked {
   return markedInstance
 }
 
-async function getHighlighter() {
+function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     highlighterPromise = (async () => {
       const { createHighlighterCore } = await import('shiki/core')
@@ -62,7 +73,8 @@ async function getHighlighter() {
       })
     })()
   }
-  return highlighterPromise
+  // if 块内已确保赋值，但模块级 let 变量 TS 不做 narrowing，显式断言非空
+  return highlighterPromise!
 }
 
 function escapeHtml(s: string): string {
@@ -96,12 +108,14 @@ export function useMarkdown(source: Ref<string>) {
         result = result.replace(
           /<pre class="shiki-fallback" data-lang="([^"]*)"><code>([\s\S]*?)<\/code><\/pre>/g,
           (_match, lang: string, code: string) => {
+            // 解码顺序：&amp; 必须最后还原，避免双重解码
+            // （原文 &lt; → escapeHtml 后 &amp;lt; → 若先 &amp; 得 &lt; → 再 &lt; 得 <，错误）
             const decoded = code
-              .replace(/&amp;/g, '&')
               .replace(/&lt;/g, '<')
               .replace(/&gt;/g, '>')
               .replace(/&quot;/g, '"')
               .replace(/&#39;/g, "'")
+              .replace(/&amp;/g, '&')
             const supported = hl.getLoadedLanguages() as string[]
             const finalLang = supported.includes(lang) ? lang : 'text'
             try {
@@ -117,7 +131,11 @@ export function useMarkdown(source: Ref<string>) {
     }
 
     if (myVersion === renderVersion) {
-      html.value = result
+      // XSS 防护最后一道闸：marked v14 已移除内置 sanitize，
+      // LLM 输出可能被提示注入污染（<script> / <img onerror> / javascript: 等），
+      // 在 v-html 渲染前必须净化。Tauri WebView 同源下可调用后端能力，风险被放大。
+      // 未设 RETURN_TRUSTED_TYPE: true，匹配返回 string 的重载，无需断言。
+      html.value = DOMPurify.sanitize(result, SANITIZE_CONFIG)
     }
   }
 

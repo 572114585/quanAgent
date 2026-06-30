@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, computed } from 'vue'
+import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Session, Attachment } from '@/types/domain'
 import { Send, Square, Paperclip, Sparkles, Wand2, Code2, FileText, X, Loader2 } from 'lucide-vue-next'
 import { useShortcuts } from '@/composables/useShortcuts'
 import MessageBubble from './MessageBubble.vue'
+import FloatingTodoList from './FloatingTodoList.vue'
+import HitlApproval from './HitlApproval.vue'
 import { useChatStore, type ChatMessage } from '@/stores/chat'
 import { useSessionsStore } from '@/stores/sessions'
 import { uploadFile } from '@/api/chat'
@@ -15,6 +17,21 @@ const chat = useChatStore()
 const sessions = useSessionsStore()
 const router = useRouter()
 
+/** 视口 ≥ 768px 时主区足够宽，任务清单默认展开；否则默认折叠 */
+const hasRoom = ref(false)
+let mq: MediaQueryList | null = null
+const onMqChange = () => {
+  hasRoom.value = mq?.matches ?? false
+}
+onMounted(() => {
+  mq = window.matchMedia('(min-width: 768px)')
+  hasRoom.value = mq.matches
+  mq.addEventListener('change', onMqChange)
+})
+onUnmounted(() => {
+  mq?.removeEventListener('change', onMqChange)
+})
+
 const scrollEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const fileEl = ref<HTMLInputElement | null>(null)
@@ -23,6 +40,13 @@ const pendingAttachments = ref<Attachment[]>([])
 const uploading = ref(false)
 
 const messages = computed<ChatMessage[]>(() => chat.messagesBySession[props.session.id] ?? [])
+const todos = computed(() => chat.todosBySession[props.session.id] ?? [])
+
+const pendingApprovalMsg = computed(() => {
+  return messages.value.find((m) => m.status === 'awaiting_approval' && m.pendingToolCalls && m.pendingToolCalls.length > 0)
+})
+const pendingToolCalls = computed(() => pendingApprovalMsg.value?.pendingToolCalls ?? [])
+const hasPendingApproval = computed(() => pendingToolCalls.value.length > 0)
 
 const suggestedPrompts = [
   { icon: Wand2, label: '帮我写一段欢迎语', prompt: '帮我写一段简洁友好的产品欢迎语' },
@@ -147,15 +171,22 @@ onMounted(() => {
   input.value = ''
 })
 
-function onDecide(_messageId: string, decisions: Array<{ type: 'approve' | 'reject' }>) {
+function onDecide(decisions: Array<{ type: 'approve' | 'reject' }>) {
   void chat.resume(props.session.id, decisions)
 }
 </script>
 
 <template>
-  <div class="flex flex-col h-full min-h-0">
-    <!-- Scroll area -->
-    <div ref="scrollEl" class="flex-1 overflow-y-auto px-4 md:px-8 py-6">
+  <div class="relative flex flex-col h-full min-h-0">
+    <!-- 悬浮任务清单：顶部靠右 -->
+    <FloatingTodoList :todos="todos" :default-expanded="hasRoom" />
+
+    <!-- Scroll area：底部留出悬浮输入框的空间；HITL 出现时额外加大留白 -->
+    <div
+      ref="scrollEl"
+      class="flex-1 overflow-y-auto px-4 md:px-8 py-6"
+      :class="hasPendingApproval ? 'pb-72' : 'pb-40'"
+    >
       <!-- Empty state -->
       <div
         v-if="messages.length === 0"
@@ -206,108 +237,126 @@ function onDecide(_messageId: string, decisions: Array<{ type: 'approve' | 'reje
           :error="m.error"
           :attachments="m.attachments"
           :artifacts="m.artifacts"
-          :pending-tool-calls="m.pendingToolCalls"
           :can-regenerate="m.role === 'assistant' && (m.status === 'complete' || m.status === 'cancelled' || (m.artifacts && m.artifacts.length > 0))"
           @regenerate="chat.regenerate(props.session.id)"
-          @decide="(d) => onDecide(m.id, d)"
         />
       </div>
     </div>
 
-    <!-- Composer -->
-    <div class="border-t border-border bg-surface-elevated/80 backdrop-blur p-3 md:p-4">
-      <!-- Pending attachments -->
+    <!-- 悬浮输入框：底部居中（相对 ChatPanel 容器定位，避免越过侧边栏） -->
+    <div class="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
+      <!-- 悬浮 HITL 确认框：紧贴输入框上方，宽度对齐 -->
       <div
-        v-if="pendingAttachments.length"
-        class="max-w-3xl mx-auto mb-2 flex flex-wrap gap-2"
+        v-if="hasPendingApproval"
+        class="max-w-3xl mx-auto px-3 md:px-4 pb-2 pointer-events-auto animate-slide-up"
       >
+        <HitlApproval
+          :tool-calls="pendingToolCalls"
+          class="shadow-xl shadow-black/10"
+          @decide="onDecide"
+        />
+      </div>
+      <!-- 渐变遮罩 + 毛玻璃：宽度对齐表单，不盖住滚动条 -->
+      <div class="max-w-3xl mx-auto px-3 md:px-4 pointer-events-none">
+        <div class="h-8 bg-gradient-to-t from-surface to-transparent"></div>
+        <div class="bg-surface/80 backdrop-blur-sm rounded-t-2xl">
+          <div class="pb-3 md:pb-5 pt-1 px-1 pointer-events-auto">
+        <!-- Pending attachments -->
         <div
-          v-for="a in pendingAttachments"
-          :key="a.id"
-          class="relative group rounded-lg border border-border bg-surface-elevated overflow-hidden"
+          v-if="pendingAttachments.length"
+          class="mb-2 flex flex-wrap gap-2 justify-center"
         >
-          <img
-            v-if="a.mime.startsWith('image/')"
-            :src="a.previewUrl || a.remoteUrl"
-            :alt="a.name"
-            class="size-16 object-cover"
-          />
           <div
-            v-else
-            class="px-3 h-16 flex items-center gap-1.5 text-xs text-ink-muted max-w-[200px]"
+            v-for="a in pendingAttachments"
+            :key="a.id"
+            class="relative group rounded-lg border border-border bg-surface-elevated/95 backdrop-blur-sm overflow-hidden shadow-md"
           >
-            <Paperclip class="size-3.5 shrink-0" />
-            <span class="truncate">{{ a.name }}</span>
-          </div>
-          <button
-            class="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-            aria-label="移除附件"
-            @click="removeAttachment(a.id)"
-          >
-            <X class="size-3" />
-          </button>
-          <div
-            v-if="!a.remoteUrl"
-            class="absolute inset-0 bg-black/40 flex items-center justify-center"
-          >
-            <Loader2 class="size-4 text-white animate-spin" />
+            <img
+              v-if="a.mime.startsWith('image/')"
+              :src="a.previewUrl || a.remoteUrl"
+              :alt="a.name"
+              class="size-14 object-cover"
+            />
+            <div
+              v-else
+              class="px-3 h-14 flex items-center gap-1.5 text-xs text-ink-muted max-w-[180px]"
+            >
+              <Paperclip class="size-3.5 shrink-0" />
+              <span class="truncate">{{ a.name }}</span>
+            </div>
+            <button
+              class="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label="移除附件"
+              @click="removeAttachment(a.id)"
+            >
+              <X class="size-3" />
+            </button>
+            <div
+              v-if="!a.remoteUrl"
+              class="absolute inset-0 bg-black/40 flex items-center justify-center"
+            >
+              <Loader2 class="size-4 text-white animate-spin" />
+            </div>
           </div>
         </div>
-      </div>
 
-      <form
-        class="max-w-3xl mx-auto flex items-end gap-2 bg-surface border border-border rounded-2xl p-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20 transition-all"
-        @submit.prevent="send()"
-      >
-        <button
-          type="button"
-          class="btn-ghost p-2 shrink-0"
-          aria-label="附件"
-          :disabled="sending || uploading"
-          @click="pickFile"
+        <!-- 输入框主体 -->
+        <form
+          class="flex items-end gap-2 bg-surface-elevated/95 backdrop-blur-md border border-border rounded-2xl p-2 shadow-xl shadow-black/10 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20 transition-all"
+          @submit.prevent="send()"
         >
-          <Paperclip class="size-4" />
-        </button>
-        <input
-          ref="fileEl"
-          type="file"
-          class="hidden"
-          accept="image/*,.pdf,.txt,.md,.docx,.doc,.xlsx,.xls,.csv,.json,.ppt,.pptx"
-          multiple
-          @change="onFileChange"
-        />
-        <textarea
-          ref="inputEl"
-          v-model="input"
-          rows="1"
-          class="flex-1 resize-none bg-transparent text-sm text-ink placeholder:text-ink-subtle focus:outline-none px-2 py-2 max-h-40"
-          placeholder="发消息…  (Enter 发送，Shift+Enter 换行)"
-          @input="autoSize"
-          @keydown.enter.exact.prevent="send()"
-        />
-        <button
-          v-if="!sending"
-          type="submit"
-          class="btn-primary p-2 shrink-0"
-          :disabled="!canSend"
-          aria-label="发送"
-        >
-          <Send class="size-4" />
-        </button>
-        <button
-          v-else
-          type="button"
-          class="btn-primary p-2 shrink-0"
-          aria-label="停止"
-          @click="stop"
-        >
-          <Square class="size-4" />
-        </button>
-      </form>
-      <p class="text-center text-[11px] text-ink-subtle mt-2 hidden md:block">
-        按 <kbd class="kbd">⌘K</kbd> 新建对话 · <kbd class="kbd">Enter</kbd> 发送 · <kbd class="kbd">Shift+Enter</kbd> 换行
-      </p>
+          <button
+            type="button"
+            class="btn-ghost p-2 shrink-0"
+            aria-label="附件"
+            :disabled="sending || uploading"
+            @click="pickFile"
+          >
+            <Paperclip class="size-4" />
+          </button>
+          <input
+            ref="fileEl"
+            type="file"
+            class="hidden"
+            accept="image/*,.pdf,.txt,.md,.docx,.doc,.xlsx,.xls,.csv,.json,.ppt,.pptx"
+            multiple
+            @change="onFileChange"
+          />
+          <textarea
+            ref="inputEl"
+            v-model="input"
+            rows="1"
+            class="flex-1 resize-none bg-transparent text-sm text-ink placeholder:text-ink-subtle focus:outline-none px-2 py-2 max-h-40"
+            placeholder="发消息…  (Enter 发送，Shift+Enter 换行)"
+            @input="autoSize"
+            @keydown.enter.exact.prevent="send()"
+          />
+          <button
+            v-if="!sending"
+            type="submit"
+            class="btn-primary p-2 shrink-0"
+            :disabled="!canSend"
+            aria-label="发送"
+          >
+            <Send class="size-4" />
+          </button>
+          <button
+            v-else
+            type="button"
+            class="btn-primary p-2 shrink-0"
+            aria-label="停止"
+            @click="stop"
+          >
+            <Square class="size-4" />
+          </button>
+        </form>
+        <p class="text-center text-[11px] text-ink-subtle mt-2 hidden md:block">
+          按 <kbd class="kbd">⌘K</kbd> 新建对话 · <kbd class="kbd">Enter</kbd> 发送 · <kbd class="kbd">Shift+Enter</kbd> 换行
+        </p>
+        </div>
+      </div>
     </div>
+  </div>
   </div>
 </template>
 
