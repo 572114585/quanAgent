@@ -4,6 +4,7 @@ langchain-openai
 langfuse
 wecom-aibot-python-sdk
 httpx
+markdownify
 qrcode
 pycryptodome
 python-dotenv

@@ -68,8 +68,8 @@ from agent_runtime import (  # noqa: E402
     backend,
     create_llm,
     render_html,
+    research_subagent,
 )
-from ducktools import web_search  # noqa: E402
 from time_tools import get_current_time  # noqa: E402
 
 try:
@@ -106,7 +106,12 @@ _agent_init_lock = asyncio.Lock()
 
 def build_agent(hitl: bool):
     """根据 hitl 标志创建 deep agent。所有工具、后端、提示词复用 agent_runtime。"""
-    interrupt_on = {"web_search": hitl, "execute": hitl} if hitl else None
+    # HITL 当前默认关闭：
+    # - web_search 已下放给 research-agent 子 agent，主 agent 不直接调
+    # - execute 受 _ShellWhitelistFilter 白名单保护，只能跑允许的命令
+    # - 日报流程要连续执行 merge_sources.py / render_pdf.py 等，卡 HITL 会中断流水线
+    # 若未来需要审批特定高危工具（如 delete_file / send_email），按需添加到 interrupt_on
+    interrupt_on = None
     logger.info(
         "build_agent(hitl=%s) interrupt_on=%s",
         hitl,
@@ -116,7 +121,8 @@ def build_agent(hitl: bool):
         model=create_llm(),
         system_prompt=SYSTEM_PROMPT,
         backend=backend,
-        tools=[web_search, get_current_time, render_html],
+        tools=[get_current_time, render_html],
+        subagents=[research_subagent],
         interrupt_on=interrupt_on,
         checkpointer=MemorySaver(),
         skills=["skills/"],
@@ -426,10 +432,14 @@ async def _stream_agent(
         async for msg_chunk, _meta in stream_iter:
             event_count += 1
             logger.debug(
-                "stream chunk #%d type=%s preview=%s",
+                "stream chunk #%d type=%s content=%r reasoning=%r tool_call_chunks=%s ai_has_tc=%s seen_tm=%s",
                 event_count,
                 type(msg_chunk).__name__,
                 str(getattr(msg_chunk, "content", ""))[:80],
+                str(getattr(msg_chunk, "additional_kwargs", {}).get("reasoning_content", ""))[:80],
+                repr(getattr(msg_chunk, "tool_call_chunks", None) or [])[:200],
+                current_ai_has_tool_calls,
+                seen_tool_message,
             )
 
             if isinstance(msg_chunk, AIMessageChunk):
@@ -533,9 +543,15 @@ async def _stream_agent(
 
             # 累积 AIMessageChunk 的工具调用分片
             tool_call_chunks = getattr(msg_chunk, "tool_call_chunks", None) or []
-            if tool_call_chunks:
-                # 当前 AIMessage 轮出现了工具调用 → 标记为工具调用轮
-                # 此轮的 content 会走 thinking_delta
+            # 只有包含实际工具调用（name 或 id 非空）的 chunk 才标记为工具调用轮。
+            # 某些模型/解析器会返回空壳 tool_call_chunks（name/id 均为 None 的占位），
+            # 若不过滤，current_ai_has_tool_calls 会被误置 True 且普通问题无 ToolMessage
+            # 来重置，导致 content 全部走 thinking_delta，最终答案区为空（"不回复"）。
+            has_real_tool_call = any(
+                isinstance(tc, dict) and (tc.get("name") or tc.get("id"))
+                for tc in tool_call_chunks
+            )
+            if has_real_tool_call:
                 current_ai_has_tool_calls = True
             for tc in tool_call_chunks:
                 idx = tc.get("index", 0)
