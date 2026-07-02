@@ -68,7 +68,7 @@ def cmd_remove(account_id: str) -> None:
         print(f"删除失败: {account_id}")
 
 
-async def run_single_account(account, sessions: SessionStore) -> None:
+async def run_single_account(account) -> None:
     """为单个账号启动监听"""
     # 初始化媒体模块
     wechat_config = WechatConfig.from_env()
@@ -86,28 +86,33 @@ async def run_single_account(account, sessions: SessionStore) -> None:
 
     monitor = Monitor(api, on_message, on_session_expired)
     print(f"🟢 账号 {account.account_id} 已启动监听")
-    await monitor.run()
+    try:
+        await monitor.run()
+    finally:
+        # 释放长期复用的 HTTP 连接，避免资源泄漏
+        await api.aclose()
 
 
 async def run_accounts(accounts: list) -> None:
-    """并发运行多个账号"""
+    """并发运行多个账号（单账号也走此路径，统一信号处理与优雅退出）"""
     if not accounts:
         print("没有可运行的账号。使用 --add 添加。")
         sys.exit(1)
 
-    if len(accounts) == 1:
-        await run_single_account(accounts[0], SessionStore())
-        return
-
-    # 多账号并发
-    tasks = [asyncio.create_task(run_single_account(acc, SessionStore())) for acc in accounts]
+    tasks = [asyncio.create_task(run_single_account(acc)) for acc in accounts]
     print(f"🟢 已启动 {len(accounts)} 个账号的监听")
 
-    # 优雅退出
+    # 优雅退出：信号处理提到顶层，单账号/多账号都生效
     loop = asyncio.get_running_loop()
+
+    def _on_signal():
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, lambda: [t.cancel() for t in tasks])
+            loop.add_signal_handler(sig, _on_signal)
         except NotImplementedError:
             pass
 

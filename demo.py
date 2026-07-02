@@ -207,7 +207,8 @@ while True:
                 need_prefix = False
         print()
     except Exception as e:
-        print(f"\n⚠️ 异常: {type(e).__name__}: {e}")
+        logging.exception("stream failed")
+        print("\n⚠️ 处理失败，请稍后重试")
 
     state_check = agent.get_state(config)
     print(f"[DEBUG] 首次stream后 state.next={state_check.next}")
@@ -261,7 +262,8 @@ while True:
                     need_prefix = False
             print()
         except Exception as e:
-            print(f"\n⚠️ 恢复执行异常: {type(e).__name__}: {e}")
+            logging.exception("resume stream failed")
+            print("\n⚠️ 恢复执行失败，请重试")
 
         # 恢复后再检查一轮（Agent 可能再次触发中断）
         state_after = agent.get_state(config)

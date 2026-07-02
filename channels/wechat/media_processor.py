@@ -509,7 +509,7 @@ def _extract_video_metadata(video_path: str) -> dict | None:
 
         return result
 
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+    except Exception as e:
         logger.debug("ffprobe failed: %s", e)
         return None
 
@@ -538,24 +538,29 @@ def _extract_video_thumbnails(video_path: str, config: MediaConfig) -> list[str]
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
                 thumb_path = f.name
 
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", video_path,
-                "-ss", f"{seek_time:.2f}",
-                "-frames:v", "1",
-                "-q:v", "2",
-                thumb_path,
-            ]
-            proc = subprocess.run(cmd, capture_output=True, timeout=10)
-            if proc.returncode == 0 and Path(thumb_path).exists():
-                thumb_data = Path(thumb_path).read_bytes()
-                b64 = base64.b64encode(thumb_data).decode("ascii")
-                thumbnails.append(f"data:image/jpeg;base64,{b64}")
-
-            os.unlink(thumb_path)
+            try:
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-ss", f"{seek_time:.2f}",
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    thumb_path,
+                ]
+                proc = subprocess.run(cmd, capture_output=True, timeout=10)
+                if proc.returncode == 0 and Path(thumb_path).exists():
+                    thumb_data = Path(thumb_path).read_bytes()
+                    b64 = base64.b64encode(thumb_data).decode("ascii")
+                    thumbnails.append(f"data:image/jpeg;base64,{b64}")
+            finally:
+                # 无论 ffmpeg 超时还是 read_bytes 失败，都确保临时文件被清理
+                try:
+                    os.unlink(thumb_path)
+                except OSError:
+                    pass
 
         return thumbnails
 
-    except (FileNotFoundError, Exception) as e:
+    except Exception as e:
         logger.debug("Video thumbnail extraction failed: %s", e)
         return []

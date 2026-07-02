@@ -54,7 +54,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessageChunk, ToolMessage
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -69,6 +68,7 @@ from agent_runtime import (  # noqa: E402
     create_llm,
     render_html,
     research_subagent,
+    BoundedMemorySaver,
 )
 from time_tools import get_current_time  # noqa: E402
 
@@ -124,7 +124,7 @@ def build_agent(hitl: bool):
         tools=[get_current_time, render_html],
         subagents=[research_subagent],
         interrupt_on=interrupt_on,
-        checkpointer=MemorySaver(),
+        checkpointer=BoundedMemorySaver(),
         skills=["skills/"],
     )
 

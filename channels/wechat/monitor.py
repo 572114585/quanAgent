@@ -1,6 +1,7 @@
 """长轮询消息监听器"""
 import asyncio
 import logging
+from collections import OrderedDict
 from typing import Callable, Awaitable
 
 from .api import WeChatApi
@@ -30,10 +31,24 @@ class Monitor:
         self._on_message = on_message
         self._on_session_expired = on_session_expired
         self._stopped = False
-        self._recent_ids: set[int] = set()
+        # 用 OrderedDict 维护插入顺序，淘汰最旧的一半时才是真正的 FIFO，
+        # 避免 set 无序导致"随机淘汰"→ 同一条消息被重复处理。
+        self._recent_ids: "OrderedDict[int, None]" = OrderedDict()
+        # 持有 pending task 引用，防止被 GC 提前回收（Python 文档明确警告）
+        self._pending: set[asyncio.Task] = set()
 
     def stop(self):
         self._stopped = True
+
+    def _remember_message_id(self, msg_id: int) -> None:
+        """记录已处理消息 id，超限时按 FIFO 淘汰最旧的一半。"""
+        self._recent_ids.pop(msg_id, None)
+        self._recent_ids[msg_id] = None
+        if len(self._recent_ids) > MAX_MSG_IDS:
+            # 真正的 FIFO 淘汰：popitem(last=False) 取最旧的
+            remove_n = MAX_MSG_IDS // 2
+            for _ in range(remove_n):
+                self._recent_ids.popitem(last=False)
 
     async def run(self) -> None:
         """主循环：长轮询 + 消息分发"""
@@ -58,27 +73,28 @@ class Monitor:
                 if new_buf:
                     save_sync_buf(new_buf)
 
-                # 处理消息
+                # 处理消息：per-message try/except，单条解析失败不丢弃同批其它消息
                 for raw_msg in resp.get("msgs") or []:
-                    msg = parse_message(raw_msg)
+                    try:
+                        msg = parse_message(raw_msg)
+                    except Exception:
+                        logger.exception("parse_message failed, skipping one msg: %r", raw_msg)
+                        continue
 
                     # 去重
                     if msg.message_id and msg.message_id in self._recent_ids:
                         continue
                     if msg.message_id:
-                        self._recent_ids.add(msg.message_id)
-                        if len(self._recent_ids) > MAX_MSG_IDS:
-                            # 淘汰最旧的一半
-                            to_remove = list(self._recent_ids)[: MAX_MSG_IDS // 2]
-                            for mid in to_remove:
-                                self._recent_ids.discard(mid)
+                        self._remember_message_id(msg.message_id)
 
                     # 只处理用户消息（不处理自己发的 BOT 消息）
                     if msg.message_type != MessageType.USER:
                         continue
 
                     # fire-and-forget：不阻塞轮询循环
-                    asyncio.create_task(self._safe_on_message(msg))
+                    task = asyncio.create_task(self._safe_on_message(msg))
+                    self._pending.add(task)
+                    task.add_done_callback(self._pending.discard)
 
                 consecutive_failures = 0
 

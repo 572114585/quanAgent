@@ -1,6 +1,7 @@
 """ilink Bot API 封装：所有与 ilinkai.weixin.qq.com 的 HTTP 交互"""
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -28,6 +29,10 @@ class WeChatApi:
         self.base_url = base_url.rstrip("/")
         self.uin = _generate_uin()
         self._next_send_time: dict[str, float] = {}
+        # 每用户一把锁，串行化限流逻辑，消除 TOCTOU 竞态
+        self._rate_locks: dict[str, asyncio.Lock] = {}
+        # 长期复用的 HTTP client，避免每请求新建连接（长轮询 TLS 握手开销显著）
+        self._client: httpx.AsyncClient | None = None
 
     @staticmethod
     def _validate_base_url(base_url: str) -> str:
@@ -56,6 +61,18 @@ class WeChatApi:
             "X-WECHAT-UIN": self.uin,
         }
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """获取长期复用的 AsyncClient（首次调用时创建）。"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+        return self._client
+
+    async def aclose(self) -> None:
+        """关闭底层 HTTP client，释放连接。应在渠道关闭时调用。"""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
     async def _request(
         self,
         path: str,
@@ -64,18 +81,18 @@ class WeChatApi:
     ) -> Any:
         url = f"{self.base_url}/{path}"
         logger.debug("API request: %s", url)
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                url,
-                json=body or {},
-                headers=self._headers(),
-                timeout=httpx.Timeout(timeout_ms / 1000),
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
-            data = resp.json()
-            logger.debug("API response: ret=%s", data.get("ret"))
-            return data
+        client = self._get_client()
+        resp = await client.post(
+            url,
+            json=body or {},
+            headers=self._headers(),
+            timeout=httpx.Timeout(timeout_ms / 1000),
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
+        data = resp.json()
+        logger.debug("API response: ret=%s", data.get("ret"))
+        return data
 
     # ── 消息接收 ──────────────────────────────────────────────
 
@@ -105,7 +122,6 @@ class WeChatApi:
             if ret == -2:
                 # 限流
                 if user_id:
-                    import time
                     self._next_send_time[user_id] = time.monotonic() + delay + self.MIN_SEND_INTERVAL
                 if attempt == max_retries:
                     raise RuntimeError(f"sendMessage rate-limited after {max_retries} retries")
@@ -120,15 +136,20 @@ class WeChatApi:
             return
 
     async def _rate_limit(self, user_id: str) -> None:
-        """每用户发送限流"""
-        import time
-        now = time.monotonic()
-        next_available = self._next_send_time.get(user_id, 0) + self.MIN_SEND_INTERVAL
-        wait = max(0, next_available - now)
-        if wait > 0:
-            logger.debug("Rate limiter waiting %.1fs for %s", wait, user_id)
-            await asyncio.sleep(wait)
-        self._next_send_time[user_id] = max(now, next_available)
+        """每用户发送限流（每用户一把锁，串行化以消除 TOCTOU 竞态）"""
+        lock = self._rate_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._rate_locks[user_id] = lock
+        async with lock:
+            now = time.monotonic()
+            next_available = self._next_send_time.get(user_id, 0) + self.MIN_SEND_INTERVAL
+            wait = max(0, next_available - now)
+            if wait > 0:
+                logger.debug("Rate limiter waiting %.1fs for %s", wait, user_id)
+                await asyncio.sleep(wait)
+            # 在锁内写入预约时间，后续并发任务能读到新值，限流间隔不被打破
+            self._next_send_time[user_id] = time.monotonic() + self.MIN_SEND_INTERVAL
 
     # ── "正在输入"状态 ────────────────────────────────────────
 

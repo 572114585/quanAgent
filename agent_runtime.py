@@ -17,6 +17,8 @@ from typing import Iterable
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
+import threading
+from collections import OrderedDict
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import (
@@ -34,6 +36,57 @@ from time_tools import get_current_time
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# BoundedMemorySaver: 在 MemorySaver 基础上对 thread_id 做 LRU 封顶，
+# 防止长期运行的服务进程（run.py / wecom bridge）因 thread_id 无限增长而 OOM。
+# 超过 MAX_THREADS 时丢弃最久未访问的 thread（含其 storage / writes）。
+MAX_THREADS = 200
+
+
+class BoundedMemorySaver(MemorySaver):
+    """带 LRU 封顶的 MemorySaver。
+
+    langgraph 的 MemorySaver 内部用 dict 存 thread 状态，无自动清理。
+    这里在 aput（异步写入入口）后按访问顺序淘汰最旧的 thread。
+    同步 put 同样处理，兼容 stream() 路径。
+    """
+
+    def __init__(self, max_threads: int = MAX_THREADS):
+        super().__init__()
+        self._max_threads = max_threads
+        self._lru: "OrderedDict[str, None]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _touch(self, thread_id: str) -> None:
+        with self._lock:
+            self._lru.pop(thread_id, None)
+            self._lru[thread_id] = None
+            self._evict_locked()
+
+    def _evict_locked(self) -> None:
+        """淘汰最旧的 thread，直到数量 <= max_threads。调用方需持锁。"""
+        while len(self._lru) > self._max_threads:
+            old_tid, _ = self._lru.popitem(last=False)
+            self.storage.pop(old_tid, None)
+            # writes 的 key 是 (thread_id, ...) 元组
+            keys_to_drop = [k for k in self.writes if k and k[0] == old_tid]
+            for k in keys_to_drop:
+                self.writes.pop(k, None)
+            logger.info("BoundedMemorySaver evicted thread %s (count=%d)", old_tid, len(self._lru))
+
+    async def aput(self, config, checkpoint, metadata, new_versions) -> None:
+        await super().aput(config, checkpoint, metadata, new_versions)
+        thread_id = (config or {}).get("configurable", {}).get("thread_id")
+        if thread_id:
+            self._touch(str(thread_id))
+
+    def put(self, config, checkpoint, metadata, new_versions) -> None:
+        super().put(config, checkpoint, metadata, new_versions)
+        thread_id = (config or {}).get("configurable", {}).get("thread_id")
+        if thread_id:
+            self._touch(str(thread_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1291,7 +1344,9 @@ research_subagent = {
         "3. 返回简短摘要（不超过 800 字）+ 文件路径\n"
         "原则：聚焦主题、精简输出。不要在上下文里堆大量结果，不要抓取过多正文。"
     ),
-    "tools": [web_search],  # 文件工具由 FilesystemMiddleware 注入
+    "tools": [web_search],  # 故意只给 web_search：限制子 agent 仅做检索+落盘，
+    # 禁止 execute/render_html 等，避免研究子任务产生副作用。
+    # write_file/read_file 由 FilesystemMiddleware 自动注入（virtual_mode 沙箱内）。
 }
 
 # 确保 workspace 子目录存在
@@ -1314,7 +1369,7 @@ agent = create_deep_agent(
     backend=backend,
     tools=[get_current_time, render_html],
     subagents=[research_subagent],
-    checkpointer=MemorySaver(),
+    checkpointer=BoundedMemorySaver(),
     skills=["skills/"],
 )
 
