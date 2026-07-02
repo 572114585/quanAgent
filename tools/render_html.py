@@ -8,7 +8,7 @@ HTML 截图成 PNG，让用户在无法渲染 HTML 的渠道里也能看到设�
 也支持对 Vite dev server 等 http://localhost:<port> URL 截图，用于
 web-video-presentation 等需要 dev server 运行时才能渲染的项目预览。
 
-风格对齐 ducktools.py / time_tools.py：
+风格对齐 tools/web_search.py / tools/get_current_time.py：
 - @tool 装饰，函数名即工具名，docstring 即 LLM 可见的工具描述
 - try/except 全捕获，错误返回中文 str（不 raise），对 LLM 友好
 """
@@ -17,6 +17,8 @@ from pathlib import Path, PurePath
 from urllib.parse import quote, urljoin
 
 from langchain_core.tools import tool
+
+from agent_core.config import WORKSPACE_ROOT, OUTPUT_DIR
 
 
 # render_html 工具的默认视口宽高，覆盖多数桌面端落地页/仪表盘场景。
@@ -32,7 +34,7 @@ _PAGE_TIMEOUT_MS = 30_000
 def _resolve_html_path(html_path: str) -> Path | None:
     """把 LLM 传入的各种路径形态规范化为 workspace 根下的绝对路径。
 
-    兼容 agent_runtime 的 path normalization 约定：
+    兼容 agent_core.runtime 的 path normalization 约定：
     - output/xxx.html        → workspace/output/xxx.html
     - /output/xxx.html       → workspace/output/xxx.html（剥前导 /）
     - D:\\project\\workspace\\output\\xxx.html → 原样
@@ -45,18 +47,18 @@ def _resolve_html_path(html_path: str) -> Path | None:
         return None
 
     # 去掉前导 /（虚拟绝对路径形式），统一成相对路径再相对 workspace 解析。
-    # 与 agent_runtime._rewrite_path_token 的「虚拟绝对路径剥前导 /」一致。
+    # 与 sandbox.path_rewriter 的「虚拟绝对路径剥前导 /」一致。
     if text.startswith("/"):
         text = text.lstrip("/")
 
     candidate = Path(text)
     if not candidate.is_absolute():
-        # workspace 是 agent 的工作根目录（与 agent_runtime.py 的 root_dir 一致）。
+        # workspace 是 agent 的工作根目录（与 agent_core.config.WORKSPACE_ROOT 一致）。
         # 但 LLM 可能传带 workspace/ 前缀的路径，也可能传不带；两种都试，哪个存在用哪个。
         # 不能简单无脑拼 workspace，否则 workspace/tmp/x → workspace/workspace/tmp/x 找不到。
         if candidate.exists():
             return candidate
-        prefixed = Path("workspace") / candidate
+        prefixed = WORKSPACE_ROOT / candidate
         if prefixed.exists():
             return prefixed
         return None
@@ -120,12 +122,12 @@ def render_html(
         # --- 确定输出目录 ---
         if is_url and steps:
             # steps 模式：输出到 output/preview/
-            out_dir = Path("workspace/output/preview")
+            out_dir = OUTPUT_DIR / "preview"
             out_dir.mkdir(parents=True, exist_ok=True)
         elif output_path:
             out_abs = Path(output_path)
             if not out_abs.is_absolute() and "workspace" not in out_abs.parts:
-                out_abs = Path("workspace") / out_abs
+                out_abs = WORKSPACE_ROOT / out_abs
             out_abs.parent.mkdir(parents=True, exist_ok=True)
         # else: out_abs 在下面按分支确定
 
@@ -153,7 +155,7 @@ def render_html(
                                 out_file = out_dir / f"step-{i:02d}.png"
                                 page.screenshot(path=str(out_file), full_page=full_page)
                                 try:
-                                    rel = out_file.resolve().relative_to(Path("workspace").resolve())
+                                    rel = out_file.resolve().relative_to(WORKSPACE_ROOT.resolve())
                                     captured.append(str(rel).replace("\\", "/"))
                                 except (ValueError, OSError):
                                     captured.append(str(out_file))
@@ -165,10 +167,10 @@ def render_html(
                         if output_path:
                             out_abs = Path(output_path)
                             if not out_abs.is_absolute() and "workspace" not in out_abs.parts:
-                                out_abs = Path("workspace") / out_abs
+                                out_abs = WORKSPACE_ROOT / out_abs
                         else:
                             safe_name = re.sub(r'[^\w]', '_', html_path.strip())[:50]
-                            out_abs = Path("workspace/output") / f"url-{safe_name}.png"
+                            out_abs = OUTPUT_DIR / f"url-{safe_name}.png"
                         out_abs.parent.mkdir(parents=True, exist_ok=True)
                         page.screenshot(path=str(out_abs), full_page=full_page)
 
@@ -181,7 +183,7 @@ def render_html(
                     if output_path:
                         out_abs = Path(output_path)
                         if not out_abs.is_absolute() and "workspace" not in out_abs.parts:
-                            out_abs = Path("workspace") / out_abs
+                            out_abs = WORKSPACE_ROOT / out_abs
                     else:
                         out_abs = _default_output_path(html_abs)
                     out_abs.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +214,7 @@ def render_html(
         # 返回相对 workspace 的路径
         try:
             if 'out_abs' in dir() and out_abs.exists():
-                rel = out_abs.resolve().relative_to(Path("workspace").resolve())
+                rel = out_abs.resolve().relative_to(WORKSPACE_ROOT.resolve())
                 out_display = str(rel).replace("\\", "/")
             else:
                 out_display = str(out_abs) if 'out_abs' in dir() else html_path

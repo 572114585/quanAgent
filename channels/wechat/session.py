@@ -3,7 +3,7 @@ import json
 import logging
 from pathlib import Path
 
-from agent_runtime import new_thread_id
+from agent_core import new_thread_id
 
 logger = logging.getLogger(__name__)
 
