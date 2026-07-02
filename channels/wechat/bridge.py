@@ -25,10 +25,10 @@ ilink Bot API 不支持流式输出（无 REPLACE 语义）：
 - 自动通过 sender.send_file 投递给用户
 """
 import logging
-from pathlib import Path
 from typing import Any
 
-from agent_runtime import agent
+from agent_core import agent
+from artifacts import diff_changed_artifacts, snapshot_output_dir_mtime
 
 from .sender import Sender
 from .types import WeixinMessage, MessageItemType
@@ -41,10 +41,6 @@ logger = logging.getLogger(__name__)
 
 # 单条消息最大字符数（ilink API 限制约 4000 字符）
 MAX_CHARS_PER_MSG = 4000
-
-# agent 产出目录（快照 diff 目标）
-_WORKSPACE = Path("workspace")
-_OUTPUT_DIR = _WORKSPACE / "output"
 
 
 def _extract_text_from_chunk(chunk: Any) -> str:
@@ -60,35 +56,6 @@ def _extract_text_from_chunk(chunk: Any) -> str:
         ]
         return "".join(parts)
     return ""
-
-
-def _snapshot(d: Path) -> dict[Path, tuple[float, int]]:
-    """扫描目录，返回 {文件路径: (mtime, size)} 快照。
-
-    用于方案 A：在 agent 调用前后各拍一次快照，diff 出本轮新增/变更的产物。
-    """
-    if not d.exists():
-        return {}
-    return {
-        p: (p.stat().st_mtime, p.stat().st_size)
-        for p in d.rglob("*")
-        if p.is_file()
-    }
-
-
-def _diff_artifacts(
-    before: dict[Path, tuple[float, int]],
-    after: dict[Path, tuple[float, int]],
-) -> list[Path]:
-    """对比两次快照，返回本轮新增或被改写的文件路径（按 mtime 升序）。"""
-    changed = [
-        p
-        for p, sig in after.items()
-        if p not in before or before[p] != sig
-    ]
-    # 新文件优先（mtime 更晚的），稳定的排序便于日志观察
-    changed.sort(key=lambda p: after[p][0])
-    return changed
 
 
 def build_user_content(msg: WeixinMessage) -> str | list[dict]:
@@ -247,7 +214,7 @@ async def handle_message(
 
     try:
         # 调用前拍 output/ 快照（方案 A：按请求维度配对，不跨请求）
-        before = _snapshot(_OUTPUT_DIR)
+        before = snapshot_output_dir_mtime()
 
         # 非流式调用 agent
         result = await _invoke_agent(user_content, thread_id)
@@ -260,7 +227,7 @@ async def handle_message(
         await sender.send_text_chunked(user_id, context_token, result)
 
         # diff 出本轮新增/变更的产物，逐个投递
-        artifacts = _diff_artifacts(before, _snapshot(_OUTPUT_DIR))
+        artifacts = diff_changed_artifacts(before, snapshot_output_dir_mtime())
         if artifacts:
             logger.info("Detected %d artifact(s) in output/", len(artifacts))
         # 发送顺序：图片（PNG/JPG 等）优先，HTML 等其他文件在后。

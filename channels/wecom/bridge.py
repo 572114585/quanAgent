@@ -13,7 +13,7 @@ from typing import Any
 
 from aibot import generate_req_id
 
-from agent_runtime import agent
+from agent_core import agent
 
 logger = logging.getLogger(__name__)
 
