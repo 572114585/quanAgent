@@ -75,7 +75,7 @@ async def build_user_content(ws_client, body: dict) -> str | list[dict]:
             data_url = await _decode_wecom_image(ws_client, image_obj)
         except Exception as e:
             logger.exception("decode image failed")
-            return f"[图片解码失败: {e}]"
+            return "[图片解码失败]"
         return [
             {"type": "image_url", "image_url": {"url": data_url}},
             {"type": "text", "text": "请描述这张图"},
@@ -103,8 +103,8 @@ async def build_user_content(ws_client, body: dict) -> str | list[dict]:
         parts.append({"type": "text", "text": text_part or "请描述这张图"})
         return parts
 
-    # 兜底：未知类型当文本处理
-    return str(body.get("text") or body)
+    # 兜底：未知类型不把整个协议 body 塞进 LLM 上下文（避免泄露 aeskey/url/内部字段）
+    return "[不支持的消息类型]"
 
 
 async def stream_agent_reply(
@@ -185,8 +185,12 @@ async def stream_agent_reply(
     except Exception as e:
         logger.exception("stream_agent_reply failed")
         try:
+            # 异常时保留已累积的合法内容，仅追加中断提示，避免 REPLACE 覆盖
+            # 用户已看到的进度，同时不泄露异常原文（仅写日志）
+            tail = "（回复中断，请重试）"
+            final = accumulated + tail if accumulated and accumulated != "💭 思考中…" else "⚠️ 处理失败，请稍后重试"
             await ws_client.reply_stream(
-                frame, stream_id, f"\n\n⚠️ 出错了: {e}", finish=True
+                frame, stream_id, final, finish=True
             )
         except Exception:
             logger.exception("finalize failed")

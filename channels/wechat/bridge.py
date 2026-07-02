@@ -245,7 +245,8 @@ async def handle_message(
     except Exception as e:
         logger.exception("handle_message failed")
         try:
-            await sender.send_text(user_id, context_token, f"⚠️ 出错了: {e}")
+            # 对用户只回固定文案，避免泄露内部路径/token/堆栈细节
+            await sender.send_text(user_id, context_token, "⚠️ 处理失败，请稍后重试")
         except Exception:
             logger.exception("error notification failed")
     finally:

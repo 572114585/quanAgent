@@ -1,6 +1,7 @@
 """媒体文件存储管理：路径分配、临时文件清理、存储统计"""
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -50,25 +51,50 @@ class MediaStorage:
 
         Returns:
             完整保存路径（文件名冲突时自动加序号）
+
+        安全：user_id 与 filename 均经净化，最终路径校验仍在 _media_dir 之内，
+        防止路径穿越（如 user_id="../../etc"）。
         """
         if category not in self.SUBDIRS:
             category = "file"
 
         base = self._media_dir / category
         if user_id:
-            base = base / user_id
+            # 净化 user_id：只允许字母数字下划线连字符，否则回退到 anonymous，
+            # 防止 user_id 含 ../ 等路径字符逃逸出 media 目录
+            safe_uid = self._sanitize_user_id(user_id)
+            base = base / safe_uid
             base.mkdir(parents=True, exist_ok=True)
 
-        target = base / filename
+        # filename 也用 sanitize_filename 净化（已有该方法）
+        safe_name = self.sanitize_filename(filename) or "file"
+        target = base / safe_name
         if target.exists():
-            stem = Path(filename).stem
-            suffix = Path(filename).suffix
+            stem = Path(safe_name).stem
+            suffix = Path(safe_name).suffix
             seq = 1
             while target.exists():
                 target = base / f"{stem}_{seq}{suffix}"
                 seq += 1
 
+        # 最终防御：解析后必须仍在 _media_dir 之内
+        try:
+            target.resolve().relative_to(self._media_dir.resolve())
+        except ValueError:
+            logger.error("Path traversal blocked: target=%s media_dir=%s", target, self._media_dir)
+            raise ValueError("refused path outside media dir")
         return target
+
+    @staticmethod
+    def _sanitize_user_id(user_id: str) -> str:
+        """净化 user_id：只保留字母数字下划线连字符，其余替换为 _。"""
+        if not user_id:
+            return "anonymous"
+        safe = re.sub(r'[^A-Za-z0-9_\-]', '_', user_id)
+        # 防止净化后仍为空或纯点号
+        if not safe or safe.strip('.') == '':
+            return "anonymous"
+        return safe[:128]  # 限制长度，避免过长路径
 
     def get_temp_path(self, filename: str) -> Path:
         """获取临时文件路径"""

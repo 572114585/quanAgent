@@ -1,7 +1,13 @@
 from langchain_core.tools import tool
 from ddgs import DDGS
 import httpx
+import ipaddress
+import logging
+import socket
+from urllib.parse import urlparse
 from markdownify import markdownify
+
+logger = logging.getLogger(__name__)
 
 # 抓正文的用户代理头，避免被部分站点拦截
 _UA = (
@@ -16,22 +22,87 @@ _MAX_CONTENT_CHARS = 4000
 _FETCH_TIMEOUT = 10.0
 # 每次搜索抓几篇正文（取结果里的前 N 个）
 _FETCH_TOP_N = 2
+# 单篇正文最大下载字节数，防止恶意大文件拖垮 agent
+_MAX_FETCH_BYTES = 512 * 1024  # 512KB
+
+
+def _is_safe_target_url(url: str) -> bool:
+    """检查 URL 是否可安全抓取：仅 http(s)，拒绝内网/回环/链路本地地址，防 SSRF。
+
+    对重定向目标同样适用：httpx follow_redirects=True 时，最终响应 URL 也需在
+    _fetch_webpage 中再次校验。
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return False
+    for _fam, _typ, _proto, _canon, sockaddr in infos:
+        ip = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_reserved
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+        ):
+            return False
+    return True
 
 
 def _fetch_webpage(url: str) -> str:
     """抓取网页正文并转为 Markdown。失败时返回空字符串（降级为只给 snippet）。"""
+    if not _is_safe_target_url(url):
+        logger.warning("Refused to fetch unsafe URL (private/loopback): %s", url)
+        return ""
     try:
-        resp = httpx.get(
+        # 用流式读取限制最大字节数，防止恶意大文件耗尽内存
+        chunks: list[bytes] = []
+        total = 0
+        too_large = False
+        text = ""
+        with httpx.stream(
             url,
+            method="GET",
             timeout=_FETCH_TIMEOUT,
             follow_redirects=True,
             headers={"User-Agent": _UA},
-        )
-        resp.raise_for_status()
-        md = markdownify(resp.text)
+        ) as resp:
+            # 校验重定向后的最终 URL，防 30x 跳到内网
+            final_url = str(resp.url)
+            if final_url != url and not _is_safe_target_url(final_url):
+                logger.warning("Refused redirected unsafe URL: %s -> %s", url, final_url)
+                return ""
+            resp.raise_for_status()
+            encoding = resp.encoding or "utf-8"
+            for chunk in resp.iter_bytes(chunk_size=8192):
+                total += len(chunk)
+                if total > _MAX_FETCH_BYTES:
+                    too_large = True
+                    break
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            text = raw.decode(encoding, errors="replace")
+        md = markdownify(text)
+        if too_large:
+            md = md[:_MAX_CONTENT_CHARS] + "\n\n[...内容过长已截断...]"
         return md[:_MAX_CONTENT_CHARS]
-    except Exception:
-        # 抓取失败不阻断流程，调用方降级为只用 snippet
+    except Exception as e:
+        # 抓取失败不阻断流程，调用方降级为只用 snippet；记录原因便于排查
+        logger.warning("Fetch webpage failed: %s -> %s: %s", url, type(e).__name__, e)
         return ""
 
 
