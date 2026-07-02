@@ -36,11 +36,22 @@ def encrypt_aes_ecb(key: bytes, plaintext: bytes) -> bytes:
 
 
 def decrypt_aes_ecb(key: bytes, ciphertext: bytes) -> bytes:
-    """AES-128-ECB 解密"""
+    """AES-128-ECB 解密（PKCS7 去填充，含校验）
+
+    安全：校验密文长度对齐、pad_len 范围、尾部填充字节一致，
+    避免恶意/损坏密文导致数据截断或返回空。
+    """
+    if len(ciphertext) == 0 or len(ciphertext) % 16 != 0:
+        raise ValueError("ciphertext length must be a positive multiple of 16")
     cipher = AES.new(key, AES.MODE_ECB)
     padded = cipher.decrypt(ciphertext)
-    # PKCS7 去填充
+    # PKCS7 去填充（手动校验，等价于 Crypto.Util.Padding.unpad）
     pad_len = padded[-1]
+    if pad_len < 1 or pad_len > 16:
+        raise ValueError(f"invalid PKCS7 padding length: {pad_len}")
+    # 校验尾部 pad_len 个字节都等于 pad_len，防伪造填充
+    if padded[-pad_len:] != bytes([pad_len]) * pad_len:
+        raise ValueError("invalid PKCS7 padding bytes")
     return padded[:-pad_len]
 
 

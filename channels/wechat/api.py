@@ -87,7 +87,12 @@ class WeChatApi:
     # ── 消息发送 ──────────────────────────────────────────────
 
     async def send_message(self, msg: dict) -> None:
-        """发送消息，含限流和重试"""
+        """发送消息，含限流和重试
+
+        成功约定：服务端返回 ret == 0。其它 ret 视为失败：
+        - ret == -2：限流，重试
+        - 其它非零：鉴权/参数等错误，抛异常（不静默当成功）
+        """
         user_id = msg.get("msg", {}).get("to_user_id")
         if user_id:
             await self._rate_limit(user_id)
@@ -96,7 +101,8 @@ class WeChatApi:
         delay = 3.0
         for attempt in range(max_retries + 1):
             resp = await self._request("ilink/bot/sendmessage", {"msg": msg})
-            if resp.get("ret") == -2:
+            ret = resp.get("ret")
+            if ret == -2:
                 # 限流
                 if user_id:
                     import time
@@ -107,6 +113,10 @@ class WeChatApi:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 15.0)
                 continue
+            if ret != 0:
+                # 非限流的其它错误码（如 -1 鉴权失败）：不当作成功
+                retmsg = resp.get("retmsg", "")
+                raise RuntimeError(f"sendMessage failed: ret={ret} retmsg={retmsg}")
             return
 
     async def _rate_limit(self, user_id: str) -> None:

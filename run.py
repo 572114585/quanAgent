@@ -327,6 +327,9 @@ def _open_langfuse_trace(session_id: str, run_name: str):
     cfg: dict = {
         "configurable": {"thread_id": session_id},
         "run_name": run_name,
+        # 限制总图步数（含子 agent），防止子 agent 无限检索导致长时间阻塞。
+        # 默认 25 对含子 agent 的场景偏紧，这里放宽到 50；子 agent 继承此值。
+        "recursion_limit": 50,
         # 同一会话的多次请求（含 HITL resume）通过 langfuse_session_id 归并到
         # langfuse UI 的同一个 session 视图。
         "metadata": {
@@ -367,6 +370,7 @@ def _build_config(session_id: str, run_name: str) -> dict:
     return {
         "configurable": {"thread_id": session_id},
         "run_name": run_name,
+        "recursion_limit": 50,
         "metadata": {
             "langfuse_session_id": session_id,
             "langfuse_tags": ["deepagents", "web"],

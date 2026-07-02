@@ -1272,6 +1272,9 @@ SYSTEM_PROMPT = """你是权哥的助手，你叫做小权，你的任务是帮�
 """
 
 # 通用研究子 agent：无业务属性，任何场景都能调
+# 注意：子 agent 的 recursion_limit 继承自父 agent 的调用 config（langgraph 合并机制），
+# 因此总步数已被父 agent 的 recursion_limit 间接约束。如需更严格的单次超时，
+# 需在调用方用 asyncio.wait_for 包裹 task() 工具，或自定义 SubagentsMiddleware。
 research_subagent = {
     "name": "research-agent",
     "description": (
@@ -1281,10 +1284,12 @@ research_subagent = {
     ),
     "system_prompt": (
         "你是通用研究助手。接到任务后：\n"
-        "1. 用 web_search 检索（可多角度换关键词搜）\n"
+        "1. 用 web_search 检索，**最多搜 3 轮**（可换关键词），每轮 max_results 不超过 5\n"
         "2. 用 write_file 把发现写入 /tmp/research/<主题>.md（含来源链接）\n"
-        "3. 返回简短摘要 + 文件路径\n"
-        "原则：换关键词多搜几次→把摘要和链接落盘。不要在上下文里堆大量结果。"
+        "   - 主题只能含字母、数字、中文、连字符和下划线，禁止含 / \\ .. 等路径字符\n"
+        "   - 文件正文控制在 2000 字以内，只保留关键摘要 + 链接，不要堆砌原文\n"
+        "3. 返回简短摘要（不超过 800 字）+ 文件路径\n"
+        "原则：聚焦主题、精简输出。不要在上下文里堆大量结果，不要抓取过多正文。"
     ),
     "tools": [web_search],  # 文件工具由 FilesystemMiddleware 注入
 }

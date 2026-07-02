@@ -10,8 +10,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 import re
 import base64
+import ipaddress
 import mimetypes
-from urllib.request import urlopen
+import socket
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from agent_runtime import create_llm, backend, web_search, get_current_time
 
@@ -95,12 +98,56 @@ IMAGE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 图片下载安全限制
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB
+_IMAGE_DOWNLOAD_TIMEOUT = 10.0
+
+
+def _is_safe_external_url(url: str) -> bool:
+    """检查 URL 是否可安全下载：仅 http(s)，拒绝内网/回环/链路本地地址，防 SSRF。"""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return False
+    for _fam, _typ, _proto, _canon, sockaddr in infos:
+        ip = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_reserved
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+        ):
+            return False
+    return True
+
+
 def to_image_part(url: str) -> dict:
     """把图片引用转成 OpenAI image_url part。HTTP URL 先下载再 base64。"""
     if url.startswith("data:"):
         return {"type": "image_url", "image_url": {"url": url}}
     if url.startswith(("http://", "https://")):
-        data = urlopen(url, timeout=10).read()
+        if not _is_safe_external_url(url):
+            raise ValueError(f"拒绝下载不安全的 URL（疑似内网/回环地址）: {url}")
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=_IMAGE_DOWNLOAD_TIMEOUT) as resp:
+            data = resp.read(_MAX_IMAGE_BYTES + 1)
+            if len(data) > _MAX_IMAGE_BYTES:
+                raise ValueError(f"图片过大（超过 {_MAX_IMAGE_BYTES} 字节）: {url}")
         mime, _ = mimetypes.guess_type(url)
         mime = mime or "image/jpeg"
         b64 = base64.b64encode(data).decode("ascii")

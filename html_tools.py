@@ -14,7 +14,7 @@ web-video-presentation 等需要 dev server 运行时才能渲染的项目预览
 """
 import re
 from pathlib import Path, PurePath
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urlparse
 
 from langchain_core.tools import tool
 
@@ -28,6 +28,26 @@ _DEFAULT_WAIT_MS = 1500
 # 截图最大等待总时长，防止异常页面卡死 agent。
 _PAGE_TIMEOUT_MS = 30_000
 
+# workspace 根目录（与 agent_runtime.py 的 root_dir 一致）。
+_WORKSPACE_ROOT = Path("workspace").resolve()
+
+
+def _is_safe_dev_server_url(url: str) -> bool:
+    """URL 模式只允许 http(s)://localhost 或 127.0.0.1 的 dev server，防 SSRF。
+
+    LLM 传入任意 http(s) URL 时，浏览器会带本机上下文访问，可被用来探测内网服务。
+    因此只允许本地 dev server（Vite 等）。
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = (parsed.hostname or "").lower()
+    # 仅允许 loopback 主机名；端口任意（dev server 端口不固定）
+    return hostname in ("localhost", "127.0.0.1", "::1")
+
 
 def _resolve_html_path(html_path: str) -> Path | None:
     """把 LLM 传入的各种路径形态规范化为 workspace 根下的绝对路径。
@@ -37,6 +57,8 @@ def _resolve_html_path(html_path: str) -> Path | None:
     - /output/xxx.html       → workspace/output/xxx.html（剥前导 /）
     - D:\\project\\workspace\\output\\xxx.html → 原样
     - 不存在的文件返回 None（让上层报错）
+
+    安全：解析后必须落在 workspace 根目录内，拒绝路径穿越（..）。
     """
     if not html_path or not isinstance(html_path, str):
         return None
@@ -54,14 +76,22 @@ def _resolve_html_path(html_path: str) -> Path | None:
         # workspace 是 agent 的工作根目录（与 agent_runtime.py 的 root_dir 一致）。
         # 但 LLM 可能传带 workspace/ 前缀的路径，也可能传不带；两种都试，哪个存在用哪个。
         # 不能简单无脑拼 workspace，否则 workspace/tmp/x → workspace/workspace/tmp/x 找不到。
-        if candidate.exists():
-            return candidate
-        prefixed = Path("workspace") / candidate
-        if prefixed.exists():
-            return prefixed
-        return None
+        candidates = [candidate, Path("workspace") / candidate]
+    else:
+        candidates = [candidate]
 
-    return candidate if candidate.exists() else None
+    for cand in candidates:
+        if not cand.exists():
+            continue
+        resolved = cand.resolve()
+        # 路径穿越防御：解析后必须在 workspace 根目录之内
+        try:
+            resolved.relative_to(_WORKSPACE_ROOT)
+        except ValueError:
+            # 不在 workspace 内，拒绝（防 ../../etc/passwd 等）
+            continue
+        return resolved
+    return None
 
 
 def _default_output_path(html_abs: Path) -> Path:
@@ -128,6 +158,13 @@ def render_html(
                 out_abs = Path("workspace") / out_abs
             out_abs.parent.mkdir(parents=True, exist_ok=True)
         # else: out_abs 在下面按分支确定
+
+        # URL 模式安全校验：只允许本地 dev server，防 SSRF 探测内网
+        if is_url and not _is_safe_dev_server_url(html_path.strip()):
+            return (
+                "渲染失败：URL 模式仅支持 http://localhost:<port> 或 http://127.0.0.1:<port> "
+                "的本地 dev server，拒绝访问任意公网/内网 URL（防 SSRF）。"
+            )
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
