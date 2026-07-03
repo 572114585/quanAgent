@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus } from '@/types/domain'
+import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask } from '@/types/domain'
 import { sendChatMessage, resumeChat } from '@/api/chat'
 
 export type ChatMessage = Message
@@ -56,6 +56,8 @@ export const useChatStore = defineStore('chat', () => {
   const pendingAttachments = ref<Record<string, Attachment[]>>({})
   /** Agent 通过 write_todos 工具维护的待办列表（按 session 存储，整体替换语义）。 */
   const todosBySession = ref<Record<string, TodoItem[]>>({})
+  /** 子智能体任务（task() 触发）按 session 存储；并行子 agent = 数组多元素。 */
+  const subagentTasksBySession = ref<Record<string, SubagentTask[]>>({})
 
   function list(sessionId: string): ChatMessage[] {
     return messagesBySession.value[sessionId] ?? []
@@ -263,6 +265,18 @@ export const useChatStore = defineStore('chat', () => {
               if (todos) todosBySession.value[sessionId] = todos
               return
             }
+            // task() 工具调用：后端已改发 subagent_start/subagent_done，这里防御性跳过
+            if (call.name === 'task') return
+            // 子智能体内部工具调用（带 subagentId）→ 进入对应子 agent 卡片的 steps，
+            // 不进 message.toolCalls（避免与思考区重复）
+            if (call.subagentId) {
+              addSubagentStep(sessionId, call.subagentId, {
+                id: call.callId ?? uid('tc'),
+                name: call.name,
+                args: call.args
+              })
+              return
+            }
             // 新协议：工具开始 → 进入 toolCalls 数组（独立于最终答案）
             if (!msg.toolCalls) msg.toolCalls = []
             msg.toolCalls.push({
@@ -276,6 +290,12 @@ export const useChatStore = defineStore('chat', () => {
             // 新协议：工具返回 → 补全对应条目
             // write_todos 已在 onToolCall 处理，跳过避免新建记录污染工具列表
             if (payload.name === 'write_todos') return
+            if (payload.name === 'task') return
+            // 子智能体内部工具返回 → 补全对应子 agent 卡片的 step
+            if (payload.subagentId) {
+              finishSubagentStep(sessionId, payload.subagentId, payload)
+              return
+            }
             if (!msg.toolCalls) return
             let record = payload.callId
               ? msg.toolCalls.find((tc) => tc.id === payload.callId)
@@ -301,6 +321,12 @@ export const useChatStore = defineStore('chat', () => {
             record.output = payload.output
             record.error = payload.error
             record.status = payload.error ? 'failed' : 'completed'
+          },
+          onSubagentStart: (p) => {
+            addSubagentTask(sessionId, p)
+          },
+          onSubagentDone: (p) => {
+            finishSubagentTask(sessionId, p.subagentId)
           },
           onInterrupt: (toolCalls) => {
             msg.pendingToolCalls = toolCalls
@@ -403,6 +429,16 @@ export const useChatStore = defineStore('chat', () => {
             if (todos) todosBySession.value[sessionId] = todos
             return
           }
+          if (call.name === 'task') return
+          // 子智能体内部工具调用 → 进入对应子 agent 卡片的 steps
+          if (call.subagentId) {
+            addSubagentStep(sessionId, call.subagentId, {
+              id: call.callId ?? uid('tc'),
+              name: call.name,
+              args: call.args
+            })
+            return
+          }
           if (!msg.toolCalls) msg.toolCalls = []
           msg.toolCalls.push({
             id: call.callId ?? uid('tc'),
@@ -414,6 +450,11 @@ export const useChatStore = defineStore('chat', () => {
         onToolResult: (payload) => {
           // write_todos 已在 onToolCall 处理，跳过避免新建记录污染工具列表
           if (payload.name === 'write_todos') return
+          if (payload.name === 'task') return
+          if (payload.subagentId) {
+            finishSubagentStep(sessionId, payload.subagentId, payload)
+            return
+          }
           if (!msg.toolCalls) return
           let record = payload.callId
             ? msg.toolCalls.find((tc) => tc.id === payload.callId)
@@ -439,6 +480,12 @@ export const useChatStore = defineStore('chat', () => {
           record.output = payload.output
           record.error = payload.error
           record.status = payload.error ? 'failed' : 'completed'
+        },
+        onSubagentStart: (p) => {
+          addSubagentTask(sessionId, p)
+        },
+        onSubagentDone: (p) => {
+          finishSubagentTask(sessionId, p.subagentId)
         },
         onInterrupt: (toolCalls) => {
           msg.pendingToolCalls = toolCalls
@@ -513,10 +560,87 @@ export const useChatStore = defineStore('chat', () => {
     delete todosBySession.value[sessionId]
   }
 
+  /** 清空指定 session 的子智能体任务列表 */
+  function clearSubagents(sessionId: string) {
+    delete subagentTasksBySession.value[sessionId]
+  }
+
+  /** 子智能体启动：新增一张 running 卡片 */
+  function addSubagentTask(sessionId: string, p: { subagentId: string; subagentType: string; description: string }) {
+    if (!subagentTasksBySession.value[sessionId]) subagentTasksBySession.value[sessionId] = []
+    if (!subagentTasksBySession.value[sessionId].find((s) => s.id === p.subagentId)) {
+      subagentTasksBySession.value[sessionId].push({
+        id: p.subagentId,
+        subagentType: p.subagentType,
+        description: p.description,
+        status: 'running',
+        steps: []
+      })
+    }
+  }
+
+  /** 子智能体结束：把对应卡片置为已完成 */
+  function finishSubagentTask(sessionId: string, subagentId: string) {
+    const arr = subagentTasksBySession.value[sessionId]
+    if (!arr) return
+    const task = arr.find((s) => s.id === subagentId)
+    if (task) task.status = 'completed'
+  }
+
+  /** 子智能体内部工具调用开始：追加一条 running 步骤 */
+  function addSubagentStep(
+    sessionId: string,
+    subagentId: string,
+    step: { id: string; name: string; args?: string | Record<string, any> }
+  ) {
+    const arr = subagentTasksBySession.value[sessionId]
+    if (!arr) return
+    const task = arr.find((s) => s.id === subagentId)
+    if (!task) return
+    if (!task.steps.find((st) => st.id === step.id)) {
+      task.steps.push({ id: step.id, name: step.name, args: step.args, status: 'running' })
+    }
+  }
+
+  /** 子智能体内部工具返回：补全对应步骤的 output/status */
+  function finishSubagentStep(
+    sessionId: string,
+    subagentId: string,
+    payload: { callId?: string; name: string; output?: string; error?: string }
+  ) {
+    const arr = subagentTasksBySession.value[sessionId]
+    if (!arr) return
+    const task = arr.find((s) => s.id === subagentId)
+    if (!task) return
+    let step = payload.callId ? task.steps.find((st) => st.id === payload.callId) : undefined
+    if (!step) {
+      for (let i = task.steps.length - 1; i >= 0; i--) {
+        if (task.steps[i].name === payload.name && task.steps[i].status === 'running') {
+          step = task.steps[i]
+          break
+        }
+      }
+    }
+    if (!step) {
+      task.steps.push({
+        id: payload.callId ?? uid('tc'),
+        name: payload.name,
+        output: payload.output,
+        error: payload.error,
+        status: payload.error ? 'failed' : 'completed'
+      })
+      return
+    }
+    step.output = payload.output
+    step.error = payload.error
+    step.status = payload.error ? 'failed' : 'completed'
+  }
+
   return {
     messagesBySession,
     pendingAttachments,
     todosBySession,
+    subagentTasksBySession,
     list,
     append,
     setStatus,
@@ -527,6 +651,7 @@ export const useChatStore = defineStore('chat', () => {
     updateToolResult,
     clear,
     clearTodos,
+    clearSubagents,
     stop,
     send,
     resume,

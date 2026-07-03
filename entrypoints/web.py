@@ -20,8 +20,10 @@
     data: {"type":"delta","delta":"..."}                              ← 最终答案 token（无 tool_call_chunks 的 AIMessageChunk）
     data: {"type":"thinking_delta","delta":"..."}                    ← 思考过程 token（reasoning_content 或工具调用轮的过渡语）
     data: {"type":"thinking"}                                        ← 思考开始标记
-    data: {"type":"tool_call","callId":"...","name":"...","args":...}  ← 模型决定调工具
-    data: {"type":"tool_result","callId":"...","name":"...","output":...}  ← 工具执行返回
+    data: {"type":"tool_call","callId":"...","name":"...","args":...,"subagentId"?: "..."}  ← 模型决定调工具（subagentId 非空=子智能体内部步骤）
+    data: {"type":"tool_result","callId":"...","name":"...","output":...,"subagentId"?: "..."}  ← 工具执行返回
+    data: {"type":"subagent_start","subagentId":"...","subagentType":"...","description":"..."}  ← 子智能体 task() 启动
+    data: {"type":"subagent_done","subagentId":"..."}                ← 子智能体 task() 结束
     data: {"type":"tool","name":"...","args":...,"preview":"..."}    ← 旧协议兼容（降级路径）
     data: {"type":"interrupt","toolCalls":[{"name":"...","args":{...}}]}
     data: {"type":"usage","promptTokens":N,"completionTokens":M}
@@ -286,6 +288,99 @@ def _build_config(session_id: str, run_name: str) -> dict:
     }
 
 
+def _accumulate_tool_call_chunks(msg_chunk, target: dict) -> None:
+    """把 AIMessageChunk 的 tool_call_chunks 累积到 target dict（按 index 聚合）。
+
+    父图与子 agent 各自维护一份 target，互不污染。
+    """
+    tool_call_chunks = getattr(msg_chunk, "tool_call_chunks", None) or []
+    for tc in tool_call_chunks:
+        idx = tc.get("index", 0)
+        if idx not in target:
+            target[idx] = {"id": "", "name": "", "args": ""}
+        if tc.get("id"):
+            target[idx]["id"] = tc["id"]
+        if tc.get("name"):
+            target[idx]["name"] += tc["name"]
+        if tc.get("args"):
+            target[idx]["args"] += tc["args"]
+
+
+def _claim_pending_task(pending_task_calls: list[dict]) -> tuple[str, str, str]:
+    """从待认领的 task() 调用中取第一个未认领项，解析 description/subagent_type。
+
+    Returns: (description, subagent_type, call_id)。找不到时返回兜底值。
+    """
+    for item in pending_task_calls:
+        if not item.get("claimed"):
+            item["claimed"] = True
+            args_raw = item.get("args", "")
+            description = "子智能体任务"
+            subagent_type = "subagent"
+            try:
+                if isinstance(args_raw, str) and args_raw:
+                    parsed = json.loads(args_raw)
+                    if isinstance(parsed, dict):
+                        description = str(parsed.get("description") or description)
+                        subagent_type = str(parsed.get("subagent_type") or subagent_type)
+                elif isinstance(args_raw, dict):
+                    description = str(args_raw.get("description") or description)
+                    subagent_type = str(args_raw.get("subagent_type") or subagent_type)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            return description, subagent_type, item.get("id", "")
+    return "子智能体任务", "subagent", ""
+
+
+async def _emit_subagent_tool_events(
+    msg_chunk,
+    pending_tools: dict,
+    subagent_id: str,
+) -> AsyncGenerator[dict, None]:
+    """把子 agent 内部的 ToolMessage 转成带 subagentId 的 tool_call/tool_result 事件。
+
+    复用 pending_tools（子 agent 自有累积）匹配 args；匹配不到则 args 留空。
+    """
+    name = msg_chunk.name or ""
+    tool_call_id = getattr(msg_chunk, "tool_call_id", "") or ""
+
+    pending = None
+    if tool_call_id:
+        for tc in pending_tools.values():
+            if tc.get("id") == tool_call_id:
+                pending = tc
+                break
+    if pending is None:
+        for tc in pending_tools.values():
+            if tc.get("name") == name:
+                pending = tc
+                break
+
+    call_id = (
+        (pending.get("id") if pending else "")
+        or tool_call_id
+        or f"tc_{uuid.uuid4().hex[:8]}"
+    )
+    args_value = pending.get("args", "") if pending else ""
+    output = str(msg_chunk.content)[:500]
+
+    yield _sse({
+        "type": "tool_call",
+        "callId": call_id,
+        "name": pending.get("name", name) if pending else name,
+        "args": args_value,
+        "subagentId": subagent_id,
+    })
+    yield _sse({
+        "type": "tool_result",
+        "callId": call_id,
+        "name": name,
+        "output": output,
+        "subagentId": subagent_id,
+    })
+    pending_tools.clear()
+
+
 async def _stream_agent(
     agent_obj,
     input_payload: dict,
@@ -309,6 +404,12 @@ async def _stream_agent(
         # pending_tool_calls 记录从 AIMessageChunk.tool_call_chunks 里拼出来的工具调用
         # —— 这些是"模型决定调工具"的元数据，进入思考区（独立于最终答案）。
         pending_tool_calls: dict[int, dict] = {}
+        # 子智能体跟踪（subgraphs=True 时启用）：
+        #   active_subagents: key=base namespace 'tools:<tid>'（即 subagentId），value=子 agent 元信息
+        #   pending_task_calls: 待认领的 task() 工具调用，子 agent 首个 chunk 到达时从中取 description/subagent_type
+        active_subagents: dict[str, dict] = {}
+        pending_task_calls: list[dict] = []  # 每项 = {"id": call_id, "args": "...", "claimed": False}
+        task_indices_seen: set[int] = set()  # 已入 pending_task_calls 的 pending idx，避免重复
         event_count = 0
 
         # === 思考 vs 最终答案：基于消息结构判断，不依赖模型输出文本标记 ===
@@ -324,33 +425,89 @@ async def _stream_agent(
         current_ai_has_tool_calls = False  # 当前 AIMessage 轮是否出现过 tool_call_chunks
 
         # 优先用 astream（真异步），没有就回退到在 thread 里跑 stream()
+        # subgraphs=True：让子智能体（task() spawn 的子图）内部消息回流父 stream，
+        # 产出形状从 (chunk, _meta) 变为 (namespace_tuple, (chunk, _meta))。
+        # 父图自身 chunk 的 namespace=()；子智能体内部 chunk 的 namespace=('tools:<tid>',)。
         astream_fn = getattr(agent_obj, "astream", None)
         if astream_fn is not None:
             stream_iter = astream_fn(
-                input_payload, config=config, stream_mode="messages"
+                input_payload, config=config, stream_mode="messages", subgraphs=True
             )
         else:
             loop = asyncio.get_running_loop()
 
             def _gen():
                 yield from agent_obj.stream(
-                    input_payload, config=config, stream_mode="messages"
+                    input_payload, config=config, stream_mode="messages", subgraphs=True
                 )
 
             stream_iter = _aiter_from_sync(loop, _gen())
 
-        async for msg_chunk, _meta in stream_iter:
+        async for stream_item in stream_iter:
+            # subgraphs=True 单 stream_mode 形状：(namespace_tuple, (chunk, _meta))
+            # 防御性兜底：若某后端版本未按预期产出，降级为 namespace=()。
+            if (
+                isinstance(stream_item, tuple)
+                and len(stream_item) == 2
+                and isinstance(stream_item[0], tuple)
+                and isinstance(stream_item[1], tuple)
+            ):
+                namespace, (msg_chunk, _meta) = stream_item
+            else:
+                namespace = ()
+                msg_chunk, _meta = stream_item  # type: ignore[misc]
             event_count += 1
+            # 子智能体识别：namespace 非空 = 来自子图（task() spawn 的子 agent）
+            is_subagent = isinstance(namespace, tuple) and len(namespace) > 0
             logger.debug(
-                "stream chunk #%d type=%s content=%r reasoning=%r tool_call_chunks=%s ai_has_tc=%s seen_tm=%s",
+                "stream chunk #%d ns=%s is_sub=%s type=%s content=%r reasoning=%r tool_call_chunks=%s ai_has_tc=%s seen_tm=%s ckpt_ns=%s",
                 event_count,
+                namespace if is_subagent else "()",
+                is_subagent,
                 type(msg_chunk).__name__,
                 str(getattr(msg_chunk, "content", ""))[:80],
                 str(getattr(msg_chunk, "additional_kwargs", {}).get("reasoning_content", ""))[:80],
                 repr(getattr(msg_chunk, "tool_call_chunks", None) or [])[:200],
                 current_ai_has_tool_calls,
                 seen_tool_message,
+                str(_meta.get("langgraph_checkpoint_ns", "")) if isinstance(_meta, dict) else "",
             )
+
+            # === 子智能体内部 chunk 处理 ===
+            # 子 agent 的 AIMessageChunk（含其内部工具调用的 tool_call_chunks）累积到
+            # 该子 agent 自有的 pending 字典；ToolMessage 作为嵌套步骤发射。
+            # 不流式子 agent 的思考文字（符合"任务+内嵌步骤"粒度）。
+            if is_subagent:
+                subagent_id = namespace[0]
+                # 首次见到该子 agent：发 subagent_start，从 pending_task_calls 取 description
+                if subagent_id not in active_subagents:
+                    description, subagent_type, call_id = _claim_pending_task(
+                        pending_task_calls
+                    )
+                    active_subagents[subagent_id] = {
+                        "call_id": call_id,
+                        "subagent_type": subagent_type,
+                        "description": description,
+                        "pending_tools": {},  # 子 agent 自有的工具调用分片累积
+                    }
+                    yield _sse({
+                        "type": "subagent_start",
+                        "subagentId": subagent_id,
+                        "subagentType": subagent_type,
+                        "description": description,
+                    })
+                sub_state = active_subagents[subagent_id]
+                if isinstance(msg_chunk, ToolMessage):
+                    # 子 agent 内部工具返回 = 嵌套步骤
+                    async for evt in _emit_subagent_tool_events(
+                        msg_chunk, sub_state["pending_tools"], subagent_id
+                    ):
+                        yield evt
+                elif isinstance(msg_chunk, AIMessageChunk):
+                    # 累积子 agent 内部工具调用分片（用于 ToolMessage 时取 args）
+                    _accumulate_tool_call_chunks(msg_chunk, sub_state["pending_tools"])
+                # 子 agent chunk 一律不进入下方父图分支
+                continue
 
             if isinstance(msg_chunk, AIMessageChunk):
                 content = msg_chunk.content
@@ -397,6 +554,36 @@ async def _stream_agent(
                 current_ai_has_tool_calls = False
                 name = msg_chunk.name or ""
                 tool_call_id = getattr(msg_chunk, "tool_call_id", "") or ""
+
+                # === task() 工具返回检测 ===
+                # 父图 "tools" 节点处理 task() 时，_meta["langgraph_checkpoint_ns"]
+                # 形如 'tools:<tid>'（无 '|'），与该次 task() spawn 的子 agent 共享 tid。
+                # 若该 ns 命中 active_subagents，说明这是 task() 结束 → 发 subagent_done，
+                # 不再发 tool_call/tool_result（避免 task() 重复出现在思考区）。
+                ckpt_ns = ""
+                if isinstance(_meta, dict):
+                    ckpt_ns = _meta.get("langgraph_checkpoint_ns", "") or ""
+                if ckpt_ns and ckpt_ns in active_subagents:
+                    yield _sse({"type": "subagent_done", "subagentId": ckpt_ns})
+                    del active_subagents[ckpt_ns]
+                    pending_tool_calls.clear()
+                    continue
+                # 边界情况：子 agent 未产生内部 chunk（无 active 记录），但 pending 命中 task
+                # → 补发 subagent_start + subagent_done，保持前端卡片完整。
+                if name == "task":
+                    description, subagent_type, _call_id = _claim_pending_task(
+                        pending_task_calls
+                    )
+                    fallback_id = ckpt_ns or f"sub_{uuid.uuid4().hex[:8]}"
+                    yield _sse({
+                        "type": "subagent_start",
+                        "subagentId": fallback_id,
+                        "subagentType": subagent_type,
+                        "description": description,
+                    })
+                    yield _sse({"type": "subagent_done", "subagentId": fallback_id})
+                    pending_tool_calls.clear()
+                    continue
 
                 # 找对应的 pending tool call（按 id 优先，按 name 兜底）
                 pending = None
@@ -463,16 +650,18 @@ async def _stream_agent(
             )
             if has_real_tool_call:
                 current_ai_has_tool_calls = True
-            for tc in tool_call_chunks:
-                idx = tc.get("index", 0)
-                if idx not in pending_tool_calls:
-                    pending_tool_calls[idx] = {"id": "", "name": "", "args": ""}
-                if tc.get("id"):
-                    pending_tool_calls[idx]["id"] = tc["id"]
-                if tc.get("name"):
-                    pending_tool_calls[idx]["name"] += tc["name"]
-                if tc.get("args"):
-                    pending_tool_calls[idx]["args"] += tc["args"]
+            _accumulate_tool_call_chunks(msg_chunk, pending_tool_calls)
+            # 注册 task() 调用到 pending_task_calls（供子 agent 首个 chunk 认领取 description）
+            for idx, tc in pending_tool_calls.items():
+                if idx in task_indices_seen:
+                    continue
+                if tc.get("name") == "task":
+                    pending_task_calls.append({
+                        "id": tc.get("id", ""),
+                        "args": tc.get("args", ""),
+                        "claimed": False,
+                    })
+                    task_indices_seen.add(idx)
 
         # 检查 HITL 中断
         # 必须用 aget_state（异步）：get_state 是同步阻塞调用，

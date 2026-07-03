@@ -99,6 +99,36 @@ export interface TodoItem {
   status: TodoStatus
 }
 
+/** 子智能体执行过程中的嵌套步骤（其内部工具调用，如 web_search / write_file） */
+export interface SubagentStep {
+  /** 唯一 id（callId） */
+  id: string
+  /** 工具名 */
+  name: string
+  /** 原始入参（字符串 JSON 或对象） */
+  args?: string | Record<string, any>
+  /** 工具返回结果（已完成时填充） */
+  output?: string
+  /** 失败原因 */
+  error?: string
+  /** 执行状态 */
+  status: 'running' | 'completed' | 'failed'
+}
+
+/** 子智能体任务（由主 agent 的 task() 工具触发） */
+export interface SubagentTask {
+  /** subagentId，后端用 langgraph base namespace 'tools:<tid>' */
+  id: string
+  /** 子 agent 类型名（如 research-agent） */
+  subagentType: string
+  /** 任务描述（task() 入参的 description） */
+  description: string
+  /** 整体状态：运行中 / 已完成 */
+  status: 'running' | 'completed'
+  /** 内部工具调用步骤 */
+  steps: SubagentStep[]
+}
+
 export type StreamEvent =
   | { type: 'start'; messageId: string }
   /** 最终答案的 token 增量 —— 进入 message.content */
@@ -107,10 +137,14 @@ export type StreamEvent =
   | { type: 'thinking' }
   /** 思考 / 规划 token 增量 —— 进入 message.thinkingContent */
   | { type: 'thinking_delta'; delta: string }
-  /** 工具开始调用 —— 新增：与最终答案解耦，进入 message.toolCalls */
-  | { type: 'tool_call'; callId: string; name: string; args?: string | Record<string, any> }
-  /** 工具执行完成 —— 新增：补全对应 callId 的 output / status */
-  | { type: 'tool_result'; callId: string; name: string; output?: string; error?: string }
+  /** 工具开始调用 —— 新增：与最终答案解耦，进入 message.toolCalls（subagentId 非空=子智能体内部步骤） */
+  | { type: 'tool_call'; callId: string; name: string; args?: string | Record<string, any>; subagentId?: string }
+  /** 工具执行完成 —— 新增：补全对应 callId 的 output / status（subagentId 非空=子智能体内部步骤） */
+  | { type: 'tool_result'; callId: string; name: string; output?: string; error?: string; subagentId?: string }
+  /** 子智能体 task() 启动 —— 进入任务进度区的"子智能体"分区 */
+  | { type: 'subagent_start'; subagentId: string; subagentType: string; description: string }
+  /** 子智能体 task() 结束 —— 把对应卡片置为已完成 */
+  | { type: 'subagent_done'; subagentId: string }
   /** 旧协议兼容：tool 结果预览（旧后端会发这个，前端降级追加到 thinking 区） */
   | { type: 'tool'; name: string; args?: string; preview?: string }
   | { type: 'interrupt'; toolCalls: ToolCallRequest[] }
