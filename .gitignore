@@ -55,6 +55,7 @@ agent-frontend/pnpm-debug.log*
 workspace/tmp/
 workspace/uploads/
 workspace/output/
+workspace/state/
 *.tmp
 nul
 

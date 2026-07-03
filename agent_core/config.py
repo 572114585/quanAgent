@@ -19,6 +19,11 @@ TMP_DIR = WORKSPACE_ROOT / "tmp"
 SKILLS_DIR = WORKSPACE_ROOT / "skills"
 UPLOADS_DIR = WORKSPACE_ROOT / "uploads"
 
+# checkpointer 持久化目录与 DB 文件（task plan / messages / interrupts 落库位置）。
+# 与 output/tmp/uploads 同级，随 workspace 卷一起持久化，进程重启后 thread 状态可恢复。
+STATE_DIR = WORKSPACE_ROOT / "state"
+CHECKPOINT_DB_PATH = STATE_DIR / "checkpoints.sqlite"
+
 # 运行时开关（原 run.py L93/96 的 HITL_ENABLED / MAX_UPLOAD_SIZE）
 HITL_ENABLED_DEFAULT = os.getenv("HITL_ENABLED", "true").lower() in ("1", "true", "yes")
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024)))
@@ -26,10 +31,11 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 
 def ensure_runtime_dirs() -> None:
-    """启动时确保 workspace/tmp、workspace/output 存在。
+    """启动时确保 workspace/tmp、workspace/output、workspace/state 存在。
 
     替代原 agent_runtime.py L1293-1294 的模块级 mkdir 调用，改由 build_agent()
     显式触发，避免 mere import 即产生副作用。
     """
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)

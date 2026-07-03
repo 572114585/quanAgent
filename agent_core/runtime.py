@@ -9,53 +9,100 @@
 - entrypoints/web 用 build_agent(hitl=HITL_ENABLED_DEFAULT)
 - entrypoints/cli 用 build_agent(hitl=True)（交互式终端需 HITL 确认 execute）
 """
+import asyncio
+import sqlite3
 import threading
 import uuid
-from collections import OrderedDict
 
 from deepagents import create_deep_agent
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 
-from agent_core.config import ensure_runtime_dirs
+from agent_core.config import CHECKPOINT_DB_PATH, ensure_runtime_dirs
 from agent_core.llm import create_llm
 from agent_core.prompts import SYSTEM_PROMPT, research_subagent
 from sandbox import backend
 from tools import get_current_time, render_html
 
-MAX_THREADS = 200
 
+class DualSqliteSaver(SqliteSaver):
+    """同时支持 sync 和 async 调用的 SQLite checkpointer。
 
-class BoundedMemorySaver(MemorySaver):
-    """带 LRU 封顶的 MemorySaver。
+    为什么不直接用 AsyncSqliteSaver：它需要 aiosqlite.Connection（async 创建），
+    无法在同步 build_agent 里构造（模块级 `agent = build_agent()` 在 import 时执行）。
+    为什么不直接用 SqliteSaver：它的 async 方法（aput/aget_tuple 等）显式抛
+    NotImplementedError，而 web 的 astream / channel 的 astream_events 走 async 路径，
+    langgraph pregel 会直接 `await checkpointer.aget_tuple(...)`，没有 to_thread 兜底。
 
-    langgraph 的 MemorySaver 内部用 dict 存 thread 状态，无自动清理。
-    这里在 aput（异步写入入口）后按访问顺序淘汰最旧的 thread。
-    同步 put 同样处理，兼容 stream() 路径。
+    本类继承 SqliteSaver（保留 sync 接口给 cli 的 stream/get_state），override
+    async 方法用 asyncio.to_thread 包对应 sync 方法（给 web/channel 的 async 路径）。
+    全局 threading.Lock 串行所有 sqlite 访问，避免并发写 "database is locked"；
+    WAL 模式 + busy_timeout 进一步提升并发与稳健性。
+
+    DB 落 workspace/state/checkpoints.sqlite，进程重启后 thread 状态（messages /
+    todos / files / pending interrupts）可恢复，HITL resume 也能跨重启生效。
     """
 
-    def __init__(self, max_threads: int = MAX_THREADS):
-        super().__init__()
-        self._max_threads = max_threads
-        self._lru: "OrderedDict[str, None]" = OrderedDict()
+    def __init__(self, conn: sqlite3.Connection):
+        super().__init__(conn)
         self._lock = threading.Lock()
+        # WAL 提升读写并发；busy_timeout 在锁竞争时等待而非立即报错。
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
 
-    def _touch(self, thread_id: str) -> None:
+    # ---- sync 接口加锁（cli 的 stream / get_state 路径）----
+    def put(self, *args, **kwargs):
         with self._lock:
-            self._lru.pop(thread_id, None)
-            self._lru[thread_id] = None
-            self._evict_locked()
+            return super().put(*args, **kwargs)
 
-    def _evict_locked(self) -> None:
-        """淘汰最旧的 thread，直到数量 <= max_threads。调用方需持锁。"""
-        while len(self._lru) > self._max_threads:
-            old_tid, _ = self._lru.popitem(last=False)
-            self.storage.pop(old_tid, None)
-            keys_to_drop = [k for k in self.writes if k and k[0] == old_tid]
-            for k in keys_to_drop:
-                self.writes.pop(k, None)
+    def put_writes(self, *args, **kwargs):
+        with self._lock:
+            return super().put_writes(*args, **kwargs)
 
-    async def aput(self, config, checkpoint, metadata, new_versions) -> None:
-        await super().aput(config, checkpoint, metadata, new_versions)
+    def get_tuple(self, *args, **kwargs):
+        with self._lock:
+            return super().get_tuple(*args, **kwargs)
+
+    def list(self, *args, **kwargs):
+        with self._lock:
+            return super().list(*args, **kwargs)
+
+    # ---- async 接口：to_thread 包 sync（web 的 astream / channel 的 astream_events）----
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        return await asyncio.to_thread(
+            self.put, config, checkpoint, metadata, new_versions
+        )
+
+    async def aput_writes(self, config, writes, task_id):
+        return await asyncio.to_thread(self.put_writes, config, writes, task_id)
+
+    async def aget_tuple(self, config):
+        return await asyncio.to_thread(self.get_tuple, config)
+
+    async def alist(self, config, *, filter=None, before=None, limit=None):
+        return await asyncio.to_thread(
+            lambda: list(self.list(config, filter=filter, before=before, limit=limit))
+        )
+
+
+# 模块级单例 checkpointer：所有 build_agent() 共用，避免多实例指向同一 SQLite 文件
+# 引发单写者并发问题。check_same_thread=False：web 的 uvicorn 多协程 + to_thread
+# 会在不同线程访问同一连接，必须放宽 sqlite3 的线程限制（_lock 保证串行）。
+_checkpointer: DualSqliteSaver | None = None
+
+
+def get_checkpointer() -> DualSqliteSaver:
+    """惰性创建模块级 DualSqliteSaver 单例并建表。
+
+    setup() 同步建 checkpoints / writes 两张表。单例保证 web/cli/channel 三处
+    build 共用同一 DB 文件、同一连接。
+    """
+    global _checkpointer
+    if _checkpointer is None:
+        conn = sqlite3.connect(str(CHECKPOINT_DB_PATH), check_same_thread=False)
+        saver = DualSqliteSaver(conn)
+        saver.setup()  # 同步建表（checkpoints / writes）
+        _checkpointer = saver
+    return _checkpointer
 
 
 def build_agent(*, hitl: bool = False):
@@ -77,7 +124,7 @@ def build_agent(*, hitl: bool = False):
         tools=[get_current_time, render_html],
         subagents=[research_subagent],
         interrupt_on=interrupt_on,
-        checkpointer=BoundedMemorySaver(),
+        checkpointer=get_checkpointer(),
         skills=["skills/"],
     )
 
