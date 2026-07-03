@@ -41,6 +41,7 @@ const uploading = ref(false)
 
 const messages = computed<ChatMessage[]>(() => chat.messagesBySession[props.session.id] ?? [])
 const todos = computed(() => chat.todosBySession[props.session.id] ?? [])
+const subagents = computed(() => chat.subagentTasksBySession[props.session.id] ?? [])
 
 const pendingApprovalMsg = computed(() => {
   return messages.value.find((m) => m.status === 'awaiting_approval' && m.pendingToolCalls && m.pendingToolCalls.length > 0)
@@ -179,7 +180,7 @@ function onDecide(decisions: Array<{ type: 'approve' | 'reject' }>) {
 <template>
   <div class="relative flex flex-col h-full min-h-0">
     <!-- 悬浮任务清单：顶部靠右 -->
-    <FloatingTodoList :todos="todos" :default-expanded="hasRoom" />
+    <FloatingTodoList :todos="todos" :subagents="subagents" :default-expanded="hasRoom" />
 
     <!-- Scroll area：底部留出悬浮输入框的空间；HITL 出现时额外加大留白 -->
     <div

@@ -143,6 +143,95 @@ const server = http.createServer(async (req, res) => {
       aborted = true
     })
 
+    // === 子智能体场景 mock ===
+    // 当消息含"研究/搜/research"时，演示并行子 agent（两张卡片 + 嵌套步骤）。
+    // 验证点：FloatingTodoList 出现"子智能体"分区、多卡片并存、步骤各自归属、状态图标正确。
+    const msgText = String(body?.message || '')
+    const triggerSubagent = /研究|搜|research/i.test(msgText)
+    if (triggerSubagent && !aborted) {
+      // 先发 write_todos 让任务清单有内容，体现"融入"分区
+      sse(res, {
+        type: 'tool_call',
+        callId: 'tc_todos_1',
+        name: 'write_todos',
+        args: JSON.stringify({
+          todos: [
+            { content: '拆解研究任务', status: 'completed' },
+            { content: '委托子智能体检索', status: 'in_progress' },
+            { content: '汇总结果并回复', status: 'pending' }
+          ]
+        })
+      })
+      sse(res, { type: 'tool_result', callId: 'tc_todos_1', name: 'write_todos', output: 'ok' })
+      await sleep(200)
+
+      // 两个并行子 agent（不同 subagentId），演示多卡片
+      const subs = [
+        {
+          id: 'tools:aaa-111',
+          type: 'research-agent',
+          desc: '检索 langgraph 子图流式机制',
+          steps: [
+            { callId: 'tc_s1_ws', name: 'web_search', query: 'langgraph subgraphs stream_mode' },
+            { callId: 'tc_s1_wf', name: 'write_file', path: '/tmp/research/langgraph.md' }
+          ]
+        },
+        {
+          id: 'tools:bbb-222',
+          type: 'research-agent',
+          desc: '检索 deepagents task 工具实现',
+          steps: [
+            { callId: 'tc_s2_ws', name: 'web_search', query: 'deepagents task tool subagent' },
+            { callId: 'tc_s2_wf', name: 'write_file', path: '/tmp/research/deepagents.md' }
+          ]
+        }
+      ]
+
+      // 同时启动两个子 agent（并行）
+      for (const s of subs) {
+        sse(res, {
+          type: 'subagent_start',
+          subagentId: s.id,
+          subagentType: s.type,
+          description: s.desc
+        })
+      }
+      await sleep(150)
+
+      // 各自跑嵌套步骤（交错演示并行）
+      for (let i = 0; i < subs.length; i++) {
+        const s = subs[i]
+        for (const step of s.steps) {
+          if (aborted) break
+          sse(res, {
+            type: 'tool_call',
+            callId: step.callId,
+            name: step.name,
+            args: JSON.stringify(
+              step.name === 'web_search' ? { query: step.query } : { path: step.path, content: '...' }
+            ),
+            subagentId: s.id
+          })
+          await sleep(randInt(80, 140))
+          sse(res, {
+            type: 'tool_result',
+            callId: step.callId,
+            name: step.name,
+            output: step.name === 'web_search' ? `搜索结果摘要：${step.query} ...` : `已写入 ${step.path}`,
+            subagentId: s.id
+          })
+          await sleep(60)
+        }
+      }
+
+      // 依次完成
+      for (const s of subs) {
+        if (aborted) break
+        sse(res, { type: 'subagent_done', subagentId: s.id })
+        await sleep(100)
+      }
+    }
+
     let totalBytes = 0
     for (let i = 0; i < segments.length; i++) {
       if (aborted) break

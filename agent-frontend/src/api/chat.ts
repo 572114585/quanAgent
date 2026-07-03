@@ -19,10 +19,14 @@ export interface StreamHandlers {
   onThinking?: () => void
   onThinkingDelta?: (delta: string) => void
   onTool?: (tool: { name: string; args?: string; preview?: string }) => void
-  /** 新协议：工具开始调用（独立于最终答案，进入 message.toolCalls） */
-  onToolCall?: (call: { callId: string; name: string; args?: string | Record<string, any> }) => void
-  /** 新协议：工具执行完成（补全 message.toolCalls 中对应条目） */
-  onToolResult?: (payload: { callId: string; name: string; output?: string; error?: string }) => void
+  /** 新协议：工具开始调用（独立于最终答案，进入 message.toolCalls；subagentId 非空=子智能体内部步骤） */
+  onToolCall?: (call: { callId: string; name: string; args?: string | Record<string, any>; subagentId?: string }) => void
+  /** 新协议：工具执行完成（补全 message.toolCalls 中对应条目；subagentId 非空=子智能体内部步骤） */
+  onToolResult?: (payload: { callId: string; name: string; output?: string; error?: string; subagentId?: string }) => void
+  /** 子智能体 task() 启动 —— 进入任务进度区的"子智能体"分区 */
+  onSubagentStart?: (p: { subagentId: string; subagentType: string; description: string }) => void
+  /** 子智能体 task() 结束 —— 把对应卡片置为已完成 */
+  onSubagentDone?: (p: { subagentId: string }) => void
   onInterrupt?: (toolCalls: ToolCallRequest[]) => void
   onUsage?: (usage: { prompt: number; completion: number }) => void
   onArtifact?: (artifact: { name: string; path: string; url: string; mime: string; size: number }) => void
@@ -57,15 +61,26 @@ async function consumeStream(
         handlers.onTool?.({ name: evt.name, args: evt.args, preview: evt.preview })
         break
       case 'tool_call':
-        handlers.onToolCall?.({ callId: evt.callId, name: evt.name, args: evt.args })
+        handlers.onToolCall?.({ callId: evt.callId, name: evt.name, args: evt.args, subagentId: evt.subagentId })
         break
       case 'tool_result':
         handlers.onToolResult?.({
           callId: evt.callId,
           name: evt.name,
           output: evt.output,
-          error: evt.error
+          error: evt.error,
+          subagentId: evt.subagentId
         })
+        break
+      case 'subagent_start':
+        handlers.onSubagentStart?.({
+          subagentId: evt.subagentId,
+          subagentType: evt.subagentType,
+          description: evt.description
+        })
+        break
+      case 'subagent_done':
+        handlers.onSubagentDone?.({ subagentId: evt.subagentId })
         break
       case 'interrupt':
         handlers.onInterrupt?.(evt.toolCalls)

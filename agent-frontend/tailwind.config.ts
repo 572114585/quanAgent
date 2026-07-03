@@ -19,7 +19,8 @@ export default {
         'accent-soft': 'rgb(var(--accent-soft) / <alpha-value>)',
         success: 'rgb(var(--success) / <alpha-value>)',
         warning: 'rgb(var(--warning) / <alpha-value>)',
-        danger: 'rgb(var(--danger) / <alpha-value>)'
+        danger: 'rgb(var(--danger) / <alpha-value>)',
+        info: 'rgb(var(--info) / <alpha-value>)'
       },
       fontFamily: {
         sans: [
