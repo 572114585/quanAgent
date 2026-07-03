@@ -662,6 +662,42 @@ async def resume(req: ResumeRequest):
     return EventSourceResponse(event_stream(), ping=15)
 
 
+@app.get("/chat/state")
+async def chat_state(sessionId: str):
+    """读 thread 状态：是否有 pending interrupt、当前 todos、消息数。
+
+    供前端启动时恢复 UI：换 SqliteSaver 后 thread 状态跨进程重启可恢复，
+    但前端原先只在流式事件里收 todos / interrupt，重启前端后无法重新获取。
+    前端在 session 加载时调本端点，发现 hasInterrupt 则恢复审批 UI，
+    todos 则恢复待办列表。
+    """
+    try:
+        agent_obj = await get_agent()
+    except RuntimeError as e:
+        return JSONResponse(
+            status_code=503,
+            content={"message": str(e)},
+        )
+    # 与 _stream_with_artifacts 一致，用 aget_state（异步）避免阻塞事件循环
+    config: dict = {"configurable": {"thread_id": sessionId}}
+    state = await agent_obj.aget_state(config)
+    interrupts: list[dict] = []
+    if state.next:
+        for task in state.tasks:
+            for intr in task.interrupts:
+                interrupts.extend(intr.value.get("action_requests", []))
+    values = state.values or {}
+    todos = values.get("todos", []) if isinstance(values, dict) else []
+    messages = values.get("messages", []) if isinstance(values, dict) else []
+    return {
+        "sessionId": sessionId,
+        "hasInterrupt": bool(state.next),
+        "interrupts": interrupts,
+        "todos": todos,
+        "messageCount": len(messages),
+    }
+
+
 def main() -> None:
     """启动 uvicorn Web Bridge。"""
     import uvicorn
