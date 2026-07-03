@@ -25,7 +25,7 @@
     data: {"type":"subagent_start","subagentId":"...","subagentType":"...","description":"..."}  ← 子智能体 task() 启动
     data: {"type":"subagent_done","subagentId":"..."}                ← 子智能体 task() 结束
     data: {"type":"tool","name":"...","args":...,"preview":"..."}    ← 旧协议兼容（降级路径）
-    data: {"type":"interrupt","toolCalls":[{"name":"...","args":{...}}]}
+    data: {"type":"interrupt","groups":[{"interruptId":"...","toolCalls":[{"name":"...","args":{...}}]}]}
     data: {"type":"usage","promptTokens":N,"completionTokens":M}
     data: {"type":"done","messageId":"..."}
     data: {"type":"error","message":"..."}
@@ -163,7 +163,13 @@ class ChatRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     sessionId: str
-    decisions: list[dict] = Field(..., description='[{"type": "approve"} | {"type": "reject"}]')
+    # 每个 interrupt 一组决定，与 interrupt 事件的 groups 一一对应。
+    # LangGraph 多 interrupt 恢复必须按 interrupt_id 索引：
+    # https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
+    decisions: list[dict] = Field(
+        ...,
+        description='[{"interruptId": "...", "decisions": [{"type": "approve" | "reject"}, ...]}, ...]',
+    )
 
 
 # === 附件处理 ===
@@ -668,13 +674,20 @@ async def _stream_agent(
         # 在 async 上下文里会卡住事件循环，导致 SSE 数据无法 flush。
         state = await agent_obj.aget_state(config)
         if state.next:
-            interrupts: list[dict] = []
+            # 按 interrupt 分组：每个 Interrupt 自带 id，恢复时必须按 id 索引，
+            # 否则多 pending interrupt 会报 RuntimeError：
+            #   "When there are multiple pending interrupts, you must specify the interrupt id when resuming"
+            # 单个 interrupt 内可能含多个 action_request（并发工具调用），共享同一 id。
+            groups: list[dict] = []
             for task in state.tasks:
                 for intr in task.interrupts:
                     action_requests = intr.value.get("action_requests", [])
-                    interrupts.extend(action_requests)
-            if interrupts:
-                yield _sse({"type": "interrupt", "toolCalls": interrupts})
+                    if action_requests:
+                        groups.append(
+                            {"interruptId": intr.id, "toolCalls": action_requests}
+                        )
+            if groups:
+                yield _sse({"type": "interrupt", "groups": groups})
 
         logger.info(
             "stream done messageId=%s events=%d duration=%.2fs",
@@ -840,9 +853,16 @@ async def resume(req: ResumeRequest):
     logger.info("resume session=%s decisions=%s", req.sessionId, req.decisions)
 
     async def event_stream() -> AsyncGenerator[dict, None]:
+        # LangGraph 多 interrupt 恢复：Command(resume={interrupt_id: value, ...})
+        # 单次调用同时恢复所有 pending interrupt，避免 chained SSE。
+        # 见 https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
+        resume_map: dict = {
+            item["interruptId"]: {"decisions": item["decisions"]}
+            for item in req.decisions
+        }
         async for evt in _stream_with_artifacts(
             agent_obj,
-            Command(resume={"decisions": req.decisions}),
+            Command(resume=resume_map),
             config,
             message_id,
         ):

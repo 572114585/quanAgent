@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask } from '@/types/domain'
+import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup } from '@/types/domain'
 import { sendChatMessage, resumeChat } from '@/api/chat'
 
 export type ChatMessage = Message
@@ -328,8 +328,8 @@ export const useChatStore = defineStore('chat', () => {
           onSubagentDone: (p) => {
             finishSubagentTask(sessionId, p.subagentId)
           },
-          onInterrupt: (toolCalls) => {
-            msg.pendingToolCalls = toolCalls
+          onInterrupt: (groups) => {
+            msg.pendingInterruptGroups = groups
             msg.status = 'awaiting_approval'
           },
           onError: (message) => {
@@ -373,7 +373,7 @@ export const useChatStore = defineStore('chat', () => {
    * HITL 审批：批准/拒绝后继续流式输出。
    * 复用 lastApprovalMsg 的 reactive 代理引用，回调直接操作。
    */
-  async function resume(sessionId: string, decisions: Array<{ type: 'approve' | 'reject' }>) {
+  async function resume(sessionId: string, groups: ResumeGroup[]) {
     const { useSessionsStore } = await import('./sessions')
     const sessions = useSessionsStore()
 
@@ -391,9 +391,11 @@ export const useChatStore = defineStore('chat', () => {
     const msg = lastApprovalMsg
 
     msg.status = 'streaming'
-    msg.pendingToolCalls = undefined
-    if (decisions.length > 0) {
-      msg.hitlNote = `✅ 用户决定：${decisions
+    msg.pendingInterruptGroups = undefined
+    // 汇总各组决定用于视觉反馈
+    const flatDecisions = groups.flatMap((g) => g.decisions)
+    if (flatDecisions.length > 0) {
+      msg.hitlNote = `✅ 用户决定：${flatDecisions
         .map((d) => (d.type === 'approve' ? '批准' : '拒绝'))
         .join('、')}`
     }
@@ -403,7 +405,7 @@ export const useChatStore = defineStore('chat', () => {
     aborters.value[sessionId] = controller
 
     try {
-      await resumeChat(sessionId, decisions, controller.signal, {
+      await resumeChat(sessionId, groups, controller.signal, {
         onDelta: (delta) => {
           msg.content += delta
         },
@@ -487,8 +489,8 @@ export const useChatStore = defineStore('chat', () => {
         onSubagentDone: (p) => {
           finishSubagentTask(sessionId, p.subagentId)
         },
-        onInterrupt: (toolCalls) => {
-          msg.pendingToolCalls = toolCalls
+        onInterrupt: (groups) => {
+          msg.pendingInterruptGroups = groups
           msg.status = 'awaiting_approval'
         },
         onError: (message) => {

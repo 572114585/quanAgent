@@ -3,7 +3,7 @@
  * 同时兼容浏览器 fetch 和 Tauri WebView 内的 fetch。
  * 支持 AbortSignal、60s 空闲超时、`data: [DONE]` 终止符。
  */
-import type { ChatRequest, StreamEvent } from '@/types/domain'
+import type { ChatRequest, StreamEvent, ResumeGroup } from '@/types/domain'
 
 const IDLE_TIMEOUT_MS = 60_000
 
@@ -247,9 +247,9 @@ export function getRuntimeBaseUrl(): string {
   return resolveBaseURL()
 }
 
-/** HITL resume 专用流。 */
+/** HITL resume 专用流。body.decisions 按 interrupt_id 分组，与后端 ResumeRequest 对齐。 */
 export async function* resumeStream(
-  body: { sessionId: string; decisions: Array<{ type: 'approve' | 'reject' }> },
+  body: { sessionId: string; decisions: ResumeGroup[] },
   opts: ChatStreamOptions
 ): AsyncGenerator<StreamEvent> {
   yield* postStream('/chat/resume', body, opts.signal, opts.onUsage)

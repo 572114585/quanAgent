@@ -1,15 +1,21 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Check, X, Wrench } from 'lucide-vue-next'
-import type { ToolCallRequest } from '@/types/domain'
+import type { InterruptGroup, ResumeGroup, ToolCallRequest } from '@/types/domain'
 
 const props = defineProps<{
-  toolCalls: ToolCallRequest[]
+  groups: InterruptGroup[]
   disabled?: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'decide', decisions: Array<{ type: 'approve' | 'reject' }>): void
+  (e: 'decide', groups: ResumeGroup[]): void
 }>()
+
+// 跨组平铺的工具调用，UI 仍按一维列表展示（用户不感知 interrupt 分组）
+const flatToolCalls = computed<ToolCallRequest[]>(() =>
+  props.groups.flatMap((g) => g.toolCalls)
+)
 
 function fmtArgs(args: string | Record<string, any> | undefined): string {
   if (!args) return ''
@@ -21,18 +27,22 @@ function fmtArgs(args: string | Record<string, any> | undefined): string {
   }
 }
 
-function approveAll() {
+function emitAll(decisionType: 'approve' | 'reject') {
   emit(
     'decide',
-    props.toolCalls.map(() => ({ type: 'approve' as const }))
+    props.groups.map((g) => ({
+      interruptId: g.interruptId,
+      decisions: g.toolCalls.map(() => ({ type: decisionType }))
+    }))
   )
 }
 
+function approveAll() {
+  emitAll('approve')
+}
+
 function rejectAll() {
-  emit(
-    'decide',
-    props.toolCalls.map(() => ({ type: 'reject' as const }))
-  )
+  emitAll('reject')
 }
 </script>
 
@@ -43,11 +53,11 @@ function rejectAll() {
     <div class="px-4 py-2.5 flex items-center gap-2 border-b border-border">
       <Wrench class="size-4 text-warning shrink-0" />
       <span class="text-sm font-medium text-ink">工具调用需要你的批准</span>
-      <span class="text-xs text-ink-subtle ml-auto">{{ toolCalls.length }} 项</span>
+      <span class="text-xs text-ink-subtle ml-auto">{{ flatToolCalls.length }} 项</span>
     </div>
 
     <div class="divide-y divide-border">
-      <div v-for="(tc, i) in toolCalls" :key="i" class="px-4 py-2.5">
+      <div v-for="(tc, i) in flatToolCalls" :key="i" class="px-4 py-2.5">
         <div class="flex items-baseline gap-2">
           <code
             class="text-xs font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded"

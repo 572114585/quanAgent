@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import type { Session, Attachment } from '@/types/domain'
+import type { Session, Attachment, ResumeGroup } from '@/types/domain'
 import { Send, Square, Paperclip, Sparkles, Wand2, Code2, FileText, X, Loader2 } from 'lucide-vue-next'
 import { useShortcuts } from '@/composables/useShortcuts'
 import MessageBubble from './MessageBubble.vue'
@@ -44,10 +44,10 @@ const todos = computed(() => chat.todosBySession[props.session.id] ?? [])
 const subagents = computed(() => chat.subagentTasksBySession[props.session.id] ?? [])
 
 const pendingApprovalMsg = computed(() => {
-  return messages.value.find((m) => m.status === 'awaiting_approval' && m.pendingToolCalls && m.pendingToolCalls.length > 0)
+  return messages.value.find((m) => m.status === 'awaiting_approval' && m.pendingInterruptGroups && m.pendingInterruptGroups.length > 0)
 })
-const pendingToolCalls = computed(() => pendingApprovalMsg.value?.pendingToolCalls ?? [])
-const hasPendingApproval = computed(() => pendingToolCalls.value.length > 0)
+const pendingInterruptGroups = computed(() => pendingApprovalMsg.value?.pendingInterruptGroups ?? [])
+const hasPendingApproval = computed(() => pendingInterruptGroups.value.length > 0)
 
 const suggestedPrompts = [
   { icon: Wand2, label: '帮我写一段欢迎语', prompt: '帮我写一段简洁友好的产品欢迎语' },
@@ -172,8 +172,8 @@ onMounted(() => {
   input.value = ''
 })
 
-function onDecide(decisions: Array<{ type: 'approve' | 'reject' }>) {
-  void chat.resume(props.session.id, decisions)
+function onDecide(groups: ResumeGroup[]) {
+  void chat.resume(props.session.id, groups)
 }
 </script>
 
@@ -252,7 +252,7 @@ function onDecide(decisions: Array<{ type: 'approve' | 'reject' }>) {
         class="max-w-3xl mx-auto px-3 md:px-4 pb-2 pointer-events-auto animate-slide-up"
       >
         <HitlApproval
-          :tool-calls="pendingToolCalls"
+          :groups="pendingInterruptGroups"
           class="shadow-xl shadow-black/10"
           @decide="onDecide"
         />

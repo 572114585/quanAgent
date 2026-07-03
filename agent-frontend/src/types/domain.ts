@@ -30,6 +30,21 @@ export interface ToolCallRequest {
   description?: string
 }
 
+/** HITL 中断分组：一个 interrupt_id 下可能含多个并发工具调用 */
+export interface InterruptGroup {
+  interruptId: string
+  toolCalls: ToolCallRequest[]
+}
+
+/** 单个工具调用的批准/拒绝决定 */
+export type ResumeDecision = { type: 'approve' | 'reject' }
+
+/** 恢复请求里按 interrupt_id 分组的决定 */
+export interface ResumeGroup {
+  interruptId: string
+  decisions: ResumeDecision[]
+}
+
 /** 思考过程中产生的工具调用记录（与最终答案 content 解耦） */
 export interface ToolCallRecord {
   /** 唯一 id，前端生成 */
@@ -64,7 +79,7 @@ export interface Message {
   artifacts?: ArtifactFile[]
   createdAt: number
   error?: string
-  pendingToolCalls?: ToolCallRequest[]
+  pendingInterruptGroups?: InterruptGroup[]
   usage?: { prompt: number; completion: number }
 }
 
@@ -147,7 +162,7 @@ export type StreamEvent =
   | { type: 'subagent_done'; subagentId: string }
   /** 旧协议兼容：tool 结果预览（旧后端会发这个，前端降级追加到 thinking 区） */
   | { type: 'tool'; name: string; args?: string; preview?: string }
-  | { type: 'interrupt'; toolCalls: ToolCallRequest[] }
+  | { type: 'interrupt'; groups: InterruptGroup[] }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
   | { type: 'artifact'; name: string; path: string; url: string; mime: string; size: number }
   | { type: 'done'; messageId: string }

@@ -171,40 +171,52 @@ def main() -> None:
             if not state.next:
                 break  # 没有挂起的中断，退出循环
 
-            # 从中断信息里提取所有 action_requests
-            all_action_requests = []
+            # 按 interrupt 分组提取 action_requests
+            # 多 pending interrupt 必须按 interrupt_id 索引恢复，否则报：
+            #   "When there are multiple pending interrupts, you must specify the interrupt id when resuming"
+            # 见 https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
+            groups = []
             for task in state.tasks:
                 for interrupt in task.interrupts:
                     action_requests = interrupt.value.get("action_requests", [])
-                    all_action_requests.extend(action_requests)
+                    if action_requests:
+                        groups.append(
+                            {"interruptId": interrupt.id, "action_requests": action_requests}
+                        )
 
-            if not all_action_requests:
+            if not groups:
                 print(f"\n[DEBUG] state.next={state.next} 但无 action_requests，中断值：", [t.interrupts for t in state.tasks])
                 break
 
-            # 逐个确认每个工具调用
-            decisions = []
-            for i, req in enumerate(all_action_requests, 1):
-                tool_name = req.get("name", "未知工具")
-                tool_args = req.get("args", {})
-                print(f"\n⚠️ [{i}/{len(all_action_requests)}] 需要确认：是否允许调用 [{tool_name}]？")
-                print(f"   参数: {tool_args}")
+            # 逐个确认每个工具调用，按 interrupt_id 收集 decisions
+            resume_map = {}
+            flat_idx = 0
+            total = sum(len(g["action_requests"]) for g in groups)
+            for grp in groups:
+                grp_decisions = []
+                for req in grp["action_requests"]:
+                    flat_idx += 1
+                    tool_name = req.get("name", "未知工具")
+                    tool_args = req.get("args", {})
+                    print(f"\n⚠️ [{flat_idx}/{total}] 需要确认：是否允许调用 [{tool_name}]？")
+                    print(f"   参数: {tool_args}")
 
-                user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
-                if user_decision == "y":
-                    print("   ✅ 已批准")
-                    decisions.append({"type": "approve"})
-                else:
-                    print("   ❌ 已拒绝")
-                    decisions.append({"type": "reject"})
+                    user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
+                    if user_decision == "y":
+                        print("   ✅ 已批准")
+                        grp_decisions.append({"type": "approve"})
+                    else:
+                        print("   ❌ 已拒绝")
+                        grp_decisions.append({"type": "reject"})
+                resume_map[grp["interruptId"]] = {"decisions": grp_decisions}
 
-            # 恢复执行：传入所有 decisions
-            print(f"\n[DEBUG] 恢复执行，decisions={decisions}")
+            # 恢复执行：一次调用恢复所有 pending interrupt
+            print(f"\n[DEBUG] 恢复执行，resume_map={resume_map}")
             need_prefix = True
             try:
                 _pending_tool_calls.clear()  # 清空上一轮的工具调用分片
                 for msg_chunk, _meta in agent.stream(
-                    Command(resume={"decisions": decisions}),
+                    Command(resume=resume_map),
                     config=config,
                     stream_mode="messages",
                 ):

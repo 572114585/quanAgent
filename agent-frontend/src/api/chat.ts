@@ -10,7 +10,7 @@
  *   POST {baseURL}/chat/resume  HITL 中断后提交决定
  *   POST {baseURL}/upload       FormData 单文件上传，返回 { url, name, mime, size }
  */
-import type { ChatRequest, StreamEvent, ToolCallRequest } from '@/types/domain'
+import type { ChatRequest, StreamEvent, InterruptGroup, ResumeGroup } from '@/types/domain'
 import { chatStream, resumeStream, getRuntimeBaseUrl } from './sse'
 
 export interface StreamHandlers {
@@ -27,7 +27,7 @@ export interface StreamHandlers {
   onSubagentStart?: (p: { subagentId: string; subagentType: string; description: string }) => void
   /** 子智能体 task() 结束 —— 把对应卡片置为已完成 */
   onSubagentDone?: (p: { subagentId: string }) => void
-  onInterrupt?: (toolCalls: ToolCallRequest[]) => void
+  onInterrupt?: (groups: InterruptGroup[]) => void
   onUsage?: (usage: { prompt: number; completion: number }) => void
   onArtifact?: (artifact: { name: string; path: string; url: string; mime: string; size: number }) => void
   onError?: (message: string) => void
@@ -83,7 +83,7 @@ async function consumeStream(
         handlers.onSubagentDone?.({ subagentId: evt.subagentId })
         break
       case 'interrupt':
-        handlers.onInterrupt?.(evt.toolCalls)
+        handlers.onInterrupt?.(evt.groups)
         break
       case 'usage':
         handlers.onUsage?.({
@@ -124,10 +124,11 @@ export async function sendChatMessage(
 
 /**
  * HITL 批准/拒绝后继续流式输出。
+ * decisions 按 interrupt_id 分组，与后端 ResumeRequest 一一对应。
  */
 export async function resumeChat(
   sessionId: string,
-  decisions: Array<{ type: 'approve' | 'reject' }>,
+  decisions: ResumeGroup[],
   signal: AbortSignal,
   handlers: StreamHandlers
 ): Promise<void> {
