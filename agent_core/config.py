@@ -29,6 +29,15 @@ HITL_ENABLED_DEFAULT = os.getenv("HITL_ENABLED", "true").lower() in ("1", "true"
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024)))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# ===== 搜索 Provider 配置 =====
+# 三个第三方搜索 API 的 key,留空则该 provider 不启用(直接跳过,不入 failover 链路)。
+# 链路顺序:Tavily → Brave → Serper → DuckDuckGo(兜底)
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+BRAVE_API_KEY: str = os.getenv("BRAVE_API_KEY", "")
+SERPER_API_KEY: str = os.getenv("SERPER_API_KEY", "")
+# provider 额度耗尽后冷却时间(秒),默认 1 小时
+SEARCH_PROVIDER_COOLDOWN_SECONDS: int = int(os.getenv("SEARCH_PROVIDER_COOLDOWN_SECONDS", "3600"))
+
 
 def ensure_runtime_dirs() -> None:
     """启动时确保 workspace/tmp、workspace/output、workspace/state 存在。

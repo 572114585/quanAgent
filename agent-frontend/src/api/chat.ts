@@ -10,7 +10,7 @@
  *   POST {baseURL}/chat/resume  HITL 中断后提交决定
  *   POST {baseURL}/upload       FormData 单文件上传，返回 { url, name, mime, size }
  */
-import type { ChatRequest, StreamEvent, InterruptGroup, ResumeGroup } from '@/types/domain'
+import type { ChatRequest, StreamEvent, InterruptGroup, ResumeGroup, Message, TodoItem, Session } from '@/types/domain'
 import { chatStream, resumeStream, getRuntimeBaseUrl } from './sse'
 
 export interface StreamHandlers {
@@ -161,6 +161,59 @@ export async function uploadFile(file: File): Promise<{
     throw new ChatStreamError(detail)
   }
   return (await res.json()) as { url: string; name: string; mime: string; size: number }
+}
+
+/** GET /chat/messages 的返回结构：历史消息 + todos + 是否有 pending interrupt。 */
+export interface HistoryResponse {
+  sessionId: string
+  messages: Message[]
+  todos: TodoItem[]
+  hasInterrupt: boolean
+}
+
+/**
+ * 拉取某 session 的完整历史消息（后端 SqliteSaver checkpoint 为唯一数据源）。
+ * 供前端打开会话时恢复 messagesBySession，避免刷新/重启后消息丢失。
+ */
+export async function fetchHistory(sessionId: string): Promise<HistoryResponse> {
+  const base = getRuntimeBaseUrl()
+  const url = base
+    ? `${base.replace(/\/+$/, '')}/chat/messages?sessionId=${encodeURIComponent(sessionId)}`
+    : `/chat/messages?sessionId=${encodeURIComponent(sessionId)}`
+  const res = await fetch(url)
+  if (!res.ok) {
+    let detail = `HTTP ${res.status} ${res.statusText}`
+    try {
+      const data = await res.json()
+      if (data?.message) detail += `: ${data.message}`
+    } catch {
+      /* ignore */
+    }
+    throw new ChatStreamError(detail)
+  }
+  return (await res.json()) as HistoryResponse
+}
+
+/** GET /chat/sessions 的返回结构：所有持久化会话列表 */
+export interface SessionsListResponse {
+  sessions: Session[]
+}
+
+/**
+ * 从后端拉取所有持久化的会话线程列表。
+ * 前端刷新后用此接口恢复会话列表，解决本地存储清空后历史会话丢失的问题。
+ */
+export async function fetchSessions(): Promise<Session[]> {
+  const base = getRuntimeBaseUrl()
+  const url = base ? `${base.replace(/\/+$/, '')}/chat/sessions` : '/chat/sessions'
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return []
+    const data = (await res.json()) as SessionsListResponse
+    return Array.isArray(data?.sessions) ? data.sessions : []
+  } catch {
+    return []
+  }
 }
 
 /** 暴露给 store 的命名导出，供旧引用 / 未来扩展用。 */

@@ -1,5 +1,4 @@
 from langchain_core.tools import tool
-from ddgs import DDGS
 import httpx
 import ipaddress
 import logging
@@ -110,40 +109,43 @@ def _fetch_webpage(url: str) -> str:
 def web_search(query: str, max_results: int = 5, topic: str = "general") -> str:
     """搜索网络，返回标题+链接+摘要，并对前2个结果抓取完整正文（转Markdown）。
 
+    搜索源按 failover 顺序尝试:Tavily → Brave → Serper → DuckDuckGo。
+    某个 provider 额度耗尽(HTTP 429/402)时自动冷却 1 小时并切换到下一个,
+    三个第三方全部不可用时回退到 DuckDuckGo。
+
     Args:
         query: 搜索关键词
         max_results: 最大返回结果数，默认5
         topic: 搜索类型。'general' 通用搜索（默认），'news' 新闻搜索（优先返回近期资讯）
     """
-    try:
-        with DDGS() as ddgs:
-            if topic == "news":
-                # ddgs.news 返回字段：title/url/body/date 等
-                results = list(ddgs.news(query, max_results=max_results))
-            else:
-                results = list(ddgs.text(query, max_results=max_results))
+    import asyncio
 
+    from tools.search import get_search_results, SearchQuery
+
+    async def _run() -> str:
+        sq = SearchQuery(query=query, max_results=max_results, topic=topic)
+        results, provider_name = await get_search_results(sq)
         if not results:
             return "没有找到相关结果"
 
-        parts = []
-        for idx, item in enumerate(results):
-            title = item.get("title", "（无标题）")
-            # news 接口字段叫 url，text 接口叫 href
-            href = item.get("url") or item.get("href", "（无链接）")
-            body = item.get("body", "（无摘要）")
-
+        parts = [f"[搜索来源: {provider_name}]"]
+        for idx, r in enumerate(results):
             # 基础条目：标题 + 链接 + 摘要
-            entry = f"[{title}]({href})\n{body}"
+            entry = f"[{r.title or '（无标题）'}]({r.url or '（无链接）'})\n{r.snippet or '（无摘要）'}"
 
             # 对前 N 个结果抓取正文，补充深度内容
-            if idx < _FETCH_TOP_N:
-                content = _fetch_webpage(href)
+            if idx < _FETCH_TOP_N and r.url:
+                content = _fetch_webpage(r.url) if _is_safe_target_url(r.url) else ""
                 if content:
                     entry += f"\n\n## 正文\n{content}"
 
             parts.append(entry)
 
         return "\n\n---\n\n".join(parts)
+
+    # web_search 是同步 @tool,LangChain astream 会在独立线程中调用它,
+    # 当前线程没有运行中的事件循环,可直接 asyncio.run()。
+    try:
+        return asyncio.run(_run())
     except Exception as e:
         return f"搜索时出错：{str(e)}"

@@ -1,16 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
 import { useSessionsStore } from '@/stores/sessions'
+import { useChatStore } from '@/stores/chat'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 
 const props = defineProps<{ id: string }>()
 const sessions = useSessionsStore()
+const chat = useChatStore()
 const session = computed(() => sessions.list.find((s) => s.id === props.id))
 
-onMounted(() => sessions.activate(props.id))
+onMounted(() => {
+  sessions.activate(props.id)
+  void chat.loadHistory(props.id)
+})
 watch(
   () => props.id,
-  (id) => sessions.activate(id)
+  (id) => {
+    sessions.activate(id)
+    void chat.loadHistory(id)
+  }
 )
 </script>
 

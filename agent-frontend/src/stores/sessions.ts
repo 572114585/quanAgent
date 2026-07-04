@@ -8,6 +8,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Session } from '@/types/domain'
 import { getStorage } from '@/lib/storage'
+import { fetchSessions } from '@/api/chat'
 
 const STORAGE_KEY = 'sessions'
 
@@ -43,25 +44,60 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
 
+  interface PersistedState {
+    list: Session[]
+    activeId: string | null
+  }
+
+  function isPersistedState(v: unknown): v is PersistedState {
+    if (typeof v !== 'object' || v === null) return false
+    const o = v as Record<string, unknown>
+    return Array.isArray(o.list) && o.list.every(isSession) && (o.activeId === null || typeof o.activeId === 'string')
+  }
+
   /** debounce 持久化，load 完成前不写盘。 */
   function scheduleSave() {
     if (!isLoaded.value) return
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
-      void storage.set(STORAGE_KEY, list.value)
+      void storage.set(STORAGE_KEY, {
+        list: list.value,
+        activeId: activeId.value
+      } satisfies PersistedState)
     }, 300)
   }
 
   async function load() {
     try {
       const raw = await storage.get<unknown>(STORAGE_KEY)
-      if (Array.isArray(raw) && raw.every(isSession)) {
+      if (isPersistedState(raw)) {
+        list.value = raw.list
+        if (raw.activeId && raw.list.some((s) => s.id === raw.activeId)) {
+          activeId.value = raw.activeId
+        }
+      } else if (Array.isArray(raw) && raw.every(isSession)) {
         list.value = raw
       }
     } catch {
-      /* ignore */
+      /* ignore local storage errors */
+    }
+
+    try {
+      const backendSessions = await fetchSessions()
+      if (backendSessions.length > 0) {
+        const existingIds = new Set(list.value.map((s) => s.id))
+        for (const bs of backendSessions) {
+          if (!existingIds.has(bs.id)) {
+            list.value.push(bs)
+          }
+        }
+        list.value.sort((a, b) => b.updatedAt - a.updatedAt)
+      }
+    } catch {
+      /* ignore backend sync errors */
     } finally {
       isLoaded.value = true
+      scheduleSave()
     }
   }
 
@@ -83,6 +119,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   function activate(id: string) {
     if (list.value.some((s) => s.id === id)) {
       activeId.value = id
+      scheduleSave()
     }
   }
 

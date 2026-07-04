@@ -54,7 +54,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -70,6 +70,7 @@ from agent_core.config import (  # noqa: E402
     OUTPUT_DIR,
     UPLOADS_DIR,
 )
+from agent_core.runtime import get_checkpointer  # noqa: E402
 from artifacts import detect_new_artifacts, snapshot_output_dir  # noqa: E402
 
 try:
@@ -904,6 +905,235 @@ async def chat_state(sessionId: str):
         "interrupts": interrupts,
         "todos": todos,
         "messageCount": len(messages),
+    }
+
+
+# === 历史消息恢复：从 SqliteSaver checkpoint 读出 langgraph 消息序列，
+#    映射成前端 Message 格式（与 chat store 的累积语义一致）===
+def _extract_text(content) -> str:
+    """从多模态 content（可能是 str 或 list[dict]）里提取纯文本。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text":
+                parts.append(p.get("text", ""))
+        return "".join(parts)
+    return str(content)
+
+
+def _msg_timestamp(msg, fallback_ms: int) -> int:
+    """从 message 的 response_metadata 取时间戳（毫秒），取不到用 fallback。
+
+    OpenAI 兼容模型在 response_metadata.created 放秒级 unix 时间戳。
+    HumanMessage / ToolMessage 通常没有，统一兜底。
+    """
+    meta = getattr(msg, "response_metadata", {}) or {}
+    created = meta.get("created")
+    if created is None:
+        # 部分模型嵌一层 response_metadata
+        inner = meta.get("response_metadata", {}) if isinstance(meta, dict) else {}
+        created = inner.get("created") if isinstance(inner, dict) else None
+    if created:
+        try:
+            return int(created) * 1000
+        except (TypeError, ValueError):
+            pass
+    return fallback_ms
+
+
+def _map_history_messages(raw_messages: list, session_id: str) -> list[dict]:
+    """把 langgraph 消息序列映射成前端 Message 列表。
+
+    映射规则（与 chat store send() 的累积语义一致，保证刷新前后 UI 结构相同）：
+    - SystemMessage → 跳过（系统提示不展示）
+    - HumanMessage → 新建一条 user message
+    - 一段 user message 后的连续 AIMessage + ToolMessage 合并成一条 assistant message：
+        · content            = 最后一条无 tool_calls 的 AIMessage.content（最终答案）
+        · thinkingContent    = 所有 AIMessage 的 reasoning_content + 工具调用轮 AIMessage 的过渡 content
+        · toolCalls          = 所有 tool_calls 配对后续 ToolMessage 的 output
+        · hasThought         = 有思考内容或工具调用时 True
+    """
+    now_ms = int(time.time() * 1000)
+    out: list[dict] = []
+    current_assistant: dict | None = None
+    seq = 0  # 用于让 createdAt 单调递增
+
+    def next_ts() -> int:
+        nonlocal seq
+        seq += 1
+        # 往前推，保证前面的消息时间更早（now - N + seq）
+        return now_ms - (len(raw_messages) - seq) * 1000
+
+    def flush():
+        nonlocal current_assistant
+        if current_assistant is not None:
+            if not current_assistant.get("thinkingContent"):
+                current_assistant.pop("thinkingContent", None)
+            if not current_assistant.get("toolCalls"):
+                current_assistant.pop("toolCalls", None)
+            out.append(current_assistant)
+            current_assistant = None
+
+    for msg in raw_messages:
+        if isinstance(msg, SystemMessage):
+            continue
+        if isinstance(msg, HumanMessage):
+            flush()
+            out.append({
+                "id": f"m_{uuid.uuid4().hex[:8]}",
+                "sessionId": session_id,
+                "role": "user",
+                "content": _extract_text(msg.content),
+                "status": "complete",
+                "createdAt": _msg_timestamp(msg, next_ts()),
+            })
+        elif isinstance(msg, AIMessage):
+            if current_assistant is None:
+                current_assistant = {
+                    "id": f"m_{uuid.uuid4().hex[:8]}",
+                    "sessionId": session_id,
+                    "role": "assistant",
+                    "content": "",
+                    "hasThought": False,
+                    "status": "complete",
+                    "createdAt": _msg_timestamp(msg, next_ts()),
+                }
+            content = _extract_text(msg.content)
+            reasoning = msg.additional_kwargs.get("reasoning_content", "") or ""
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if tool_calls:
+                # 工具调用轮：content 是过渡语 → thinking
+                current_assistant["hasThought"] = True
+                if content:
+                    current_assistant["thinkingContent"] = (
+                        current_assistant.get("thinkingContent", "") + content
+                    )
+                if reasoning:
+                    current_assistant["thinkingContent"] = (
+                        current_assistant.get("thinkingContent", "") + reasoning
+                    )
+                for tc in tool_calls:
+                    tc_id = tc.get("id") or f"tc_{uuid.uuid4().hex[:8]}"
+                    current_assistant.setdefault("toolCalls", []).append({
+                        "id": tc_id,
+                        "name": tc.get("name", ""),
+                        "args": tc.get("args", ""),
+                        "status": "running",
+                    })
+            else:
+                # 最终答案轮
+                if reasoning:
+                    current_assistant["hasThought"] = True
+                    current_assistant["thinkingContent"] = (
+                        current_assistant.get("thinkingContent", "") + reasoning
+                    )
+                if content:
+                    current_assistant["content"] += content
+        elif isinstance(msg, ToolMessage):
+            if current_assistant is None:
+                continue
+            tool_call_id = getattr(msg, "tool_call_id", "") or ""
+            name = msg.name or ""
+            output = str(msg.content)[:500]
+            record = None
+            for tc in current_assistant.get("toolCalls", []):
+                if tc["id"] == tool_call_id:
+                    record = tc
+                    break
+            if record is None:
+                for tc in current_assistant.get("toolCalls", []):
+                    if tc["name"] == name and tc["status"] == "running":
+                        record = tc
+                        break
+            if record:
+                record["output"] = output
+                record["status"] = "completed"
+            else:
+                current_assistant.setdefault("toolCalls", []).append({
+                    "id": tool_call_id or f"tc_{uuid.uuid4().hex[:8]}",
+                    "name": name,
+                    "args": "",
+                    "output": output,
+                    "status": "completed",
+                })
+    flush()
+    return out
+
+
+@app.get("/chat/sessions")
+async def chat_sessions():
+    """列出所有持久化的会话线程，返回前端 SessionSummary 格式。
+
+    前端刷新后可从本端点恢复会话列表（而不仅依赖前端本地存储），
+    解决 IndexedDB/Tauri Store 清空后历史会话丢失的问题。
+    """
+    try:
+        agent_obj = await get_agent()
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"message": str(e)})
+
+    checkpointer = get_checkpointer()
+    thread_ids = await checkpointer.alist_threads()
+
+    sessions_out = []
+    for tid in thread_ids:
+        try:
+            config: dict = {"configurable": {"thread_id": tid}}
+            state = await agent_obj.aget_state(config)
+            values = state.values or {}
+            messages = values.get("messages", []) if isinstance(values, dict) else []
+
+            title = "新对话"
+            for msg in messages:
+                if isinstance(msg, HumanMessage):
+                    text = _extract_text(msg.content).strip()
+                    if text:
+                        title = text[:30] + ("..." if len(text) > 30 else "")
+                        break
+
+            sessions_out.append({
+                "id": tid,
+                "title": title,
+                "messageCount": len(messages),
+                "createdAt": int(time.time() * 1000),
+                "updatedAt": int(time.time() * 1000),
+            })
+        except Exception as e:
+            logger.warning("Failed to load thread %s: %s", tid, e)
+            continue
+
+    sessions_out.sort(key=lambda s: s.get("updatedAt", 0), reverse=True)
+    return {"sessions": sessions_out}
+
+
+@app.get("/chat/messages")
+async def chat_messages(sessionId: str):
+    """读取某 session 的完整历史消息，从 SqliteSaver checkpoint 恢复。
+
+    后端是消息的唯一数据源（langgraph checkpoint 持久化在
+    workspace/state/checkpoints.sqlite），前端不单独持久化消息正文，
+    打开会话时调本端点把历史拉回 messagesBySession。
+
+    返回结构对齐前端 Message 类型（src/types/domain.ts），同时附带 todos
+    和 hasInterrupt，省去前端再调一次 /chat/state。
+    """
+    try:
+        agent_obj = await get_agent()
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"message": str(e)})
+    config: dict = {"configurable": {"thread_id": sessionId}}
+    state = await agent_obj.aget_state(config)
+    values = state.values or {}
+    raw_messages = values.get("messages", []) if isinstance(values, dict) else []
+    todos = values.get("todos", []) if isinstance(values, dict) else []
+    messages = _map_history_messages(raw_messages, sessionId)
+    return {
+        "sessionId": sessionId,
+        "messages": messages,
+        "todos": todos,
+        "hasInterrupt": bool(state.next),
     }
 
 

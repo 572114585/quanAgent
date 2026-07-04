@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup } from '@/types/domain'
-import { sendChatMessage, resumeChat } from '@/api/chat'
+import { sendChatMessage, resumeChat, fetchHistory } from '@/api/chat'
 
 export type ChatMessage = Message
 
@@ -48,7 +48,7 @@ interface SendOptions {
 }
 
 export const useChatStore = defineStore('chat', () => {
-  /** Keyed by sessionId. Phase 4 will swap to persistent storage. */
+  /** Keyed by sessionId. 消息正文不在前端本地持久化，由后端 SqliteSaver checkpoint 兜底，loadHistory() 拉取恢复。 */
   const messagesBySession = ref<Record<string, ChatMessage[]>>({})
   /** Abort controllers per session for in-flight streams. */
   const aborters = ref<Record<string, AbortController | null>>({})
@@ -173,6 +173,37 @@ export const useChatStore = defineStore('chat', () => {
           m.status = 'cancelled'
         }
       }
+    }
+  }
+
+  /** 正在加载历史的 session 集合，避免并发重复请求。 */
+  const loadingSet = ref<Set<string>>(new Set())
+
+  /**
+   * 从后端拉取历史消息恢复到 messagesBySession。
+   * 后端 SqliteSaver checkpoint 是唯一数据源，前端不本地持久化消息正文。
+   * 已加载 / 正在加载 / 已有内存数据（如正在流式）时跳过，避免覆盖。
+   *
+   * 失败时不写空数组：空数组 [] 是 truthy，会被上方 guard 当作"已加载"
+   * 阻止重试。保持 undefined 让用户刷新/重进会话时能重新拉取。
+   * ChatPanel 的 messages computed 用 `?? []` 兜底，undefined 不影响渲染。
+   */
+  async function loadHistory(sessionId: string) {
+    if (messagesBySession.value[sessionId] || loadingSet.value.has(sessionId)) return
+    loadingSet.value.add(sessionId)
+    try {
+      const data = await fetchHistory(sessionId)
+      // 并发场景：加载期间若已被 send() 填充，则不覆盖
+      if (!messagesBySession.value[sessionId]) {
+        messagesBySession.value[sessionId] = data.messages
+      }
+      if (data.todos?.length && !todosBySession.value[sessionId]) {
+        todosBySession.value[sessionId] = data.todos
+      }
+    } catch (err) {
+      console.error('[chat] loadHistory failed', err)
+    } finally {
+      loadingSet.value.delete(sessionId)
     }
   }
 
@@ -655,6 +686,7 @@ export const useChatStore = defineStore('chat', () => {
     clearTodos,
     clearSubagents,
     stop,
+    loadHistory,
     send,
     resume,
     regenerate,

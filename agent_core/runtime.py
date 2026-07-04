@@ -9,6 +9,8 @@
 - entrypoints/web 用 build_agent(hitl=HITL_ENABLED_DEFAULT)
 - entrypoints/cli 用 build_agent(hitl=True)（交互式终端需 HITL 确认 execute）
 """
+from __future__ import annotations
+
 import asyncio
 import sqlite3
 import threading
@@ -54,9 +56,9 @@ class DualSqliteSaver(SqliteSaver):
         with self._lock:
             return super().put(*args, **kwargs)
 
-    def put_writes(self, *args, **kwargs):
+    def put_writes(self, config, writes, task_id, task_path: str = ""):
         with self._lock:
-            return super().put_writes(*args, **kwargs)
+            return super().put_writes(config, writes, task_id, task_path)
 
     def get_tuple(self, *args, **kwargs):
         with self._lock:
@@ -66,14 +68,19 @@ class DualSqliteSaver(SqliteSaver):
         with self._lock:
             return super().list(*args, **kwargs)
 
+    def list_threads(self) -> list[str]:
+        with self._lock:
+            cur = self.conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
+            return [row[0] for row in cur.fetchall()]
+
     # ---- async 接口：to_thread 包 sync（web 的 astream / channel 的 astream_events）----
     async def aput(self, config, checkpoint, metadata, new_versions):
         return await asyncio.to_thread(
             self.put, config, checkpoint, metadata, new_versions
         )
 
-    async def aput_writes(self, config, writes, task_id):
-        return await asyncio.to_thread(self.put_writes, config, writes, task_id)
+    async def aput_writes(self, config, writes, task_id, task_path: str = ""):
+        return await asyncio.to_thread(self.put_writes, config, writes, task_id, task_path)
 
     async def aget_tuple(self, config):
         return await asyncio.to_thread(self.get_tuple, config)
@@ -82,6 +89,9 @@ class DualSqliteSaver(SqliteSaver):
         return await asyncio.to_thread(
             lambda: list(self.list(config, filter=filter, before=before, limit=limit))
         )
+
+    async def alist_threads(self) -> list[str]:
+        return await asyncio.to_thread(self.list_threads)
 
 
 # 模块级单例 checkpointer：所有 build_agent() 共用，避免多实例指向同一 SQLite 文件
