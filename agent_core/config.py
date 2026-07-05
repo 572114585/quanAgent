@@ -38,6 +38,10 @@ SERPER_API_KEY: str = os.getenv("SERPER_API_KEY", "")
 # provider 额度耗尽后冷却时间(秒),默认 1 小时
 SEARCH_PROVIDER_COOLDOWN_SECONDS: int = int(os.getenv("SEARCH_PROVIDER_COOLDOWN_SECONDS", "3600"))
 
+# 注意:知识库(kb_tool)的 KB_* 配置不在此处定义,统一在 tools/kb_tool.py 读取。
+# 原因:agent_core 包初始化会拉 runtime → build_agent → 需要 tools,若 kb_tool
+# 从此处 import 会形成循环。此处只在 ensure_runtime_dirs 中确保持久化目录存在。
+
 
 def ensure_runtime_dirs() -> None:
     """启动时确保 workspace/tmp、workspace/output、workspace/state 存在。
@@ -48,3 +52,6 @@ def ensure_runtime_dirs() -> None:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # 知识库持久化目录(KB_* 配置见 tools/kb_tool.py,此处只读 env 确保 mkdir)
+    kb_persist_dir = os.getenv("KB_PERSIST_DIR", str(WORKSPACE_ROOT / "kb_store"))
+    Path(kb_persist_dir).mkdir(parents=True, exist_ok=True)

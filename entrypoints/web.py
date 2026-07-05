@@ -620,11 +620,15 @@ async def _stream_agent(
                         "args": pending.get("args", ""),
                     })
                     # 2) 再发 tool_result：补全同 callId 的 output / status=completed
+                    # kb_search 的 output 含完整引用元数据(<!--KB_REFS:...-->),
+                    # 前端要解析引用来源面板,不能截断到 500 字符
+                    _output_str = str(msg_chunk.content)
+                    _out_limit = 5000 if name in ("kb_search", "kb_add_document") else 500
                     yield _sse({
                         "type": "tool_result",
                         "callId": call_id,
                         "name": name,
-                        "output": str(msg_chunk.content)[:500],
+                        "output": _output_str[:_out_limit],
                     })
                 else:
                     # pending 找不到（tool_call_chunks 未累积到 name），
@@ -636,11 +640,13 @@ async def _stream_agent(
                         "name": name,
                         "args": "",
                     })
+                    _output_str = str(msg_chunk.content)
+                    _out_limit = 5000 if name in ("kb_search", "kb_add_document") else 500
                     yield _sse({
                         "type": "tool_result",
                         "callId": call_id,
                         "name": name,
-                        "output": str(msg_chunk.content)[:500],
+                        "output": _output_str[:_out_limit],
                     })
 
                 pending_tool_calls.clear()

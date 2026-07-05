@@ -1,292 +1,354 @@
-# DeepAgent 通用任务 Agent
+# DeepAgent — General-Purpose Task Agent
 
-一个基于 DeepAgents/LangGraph 构建的可扩展通用任务 Agent 系统，支持 Web 界面、桌面应用和移动端，具备 SSE 流式对话、人机协作（HITL）、文件上传、多渠道接入（微信/企业微信）等能力。
+An extensible general-purpose task agent system built on DeepAgents / LangGraph. Ships with a Web UI, desktop and mobile shells, SSE streaming chat, human-in-the-loop (HITL) approval, file uploads, multi-channel bridging (WeChat / WeCom), pluggable Skills, multi-provider search failover, and SQLite-backed task plan persistence.
 
-## 项目介绍
+## Introduction
 
-本项目采用"全链路微服务 + Skills"架构，核心是一个通用 Agent 编排内核，不绑定具体业务能力。PPT生成、联网搜索、知识库检索、数据分析、文件处理等能力以可插拔 Skill 形式接入。
+This project follows a "full-stack microservices + Skills" architecture. The core is a general-purpose agent orchestration kernel that is not bound to any specific business capability. Capabilities such as document extraction, web search, knowledge retrieval, data analysis, file processing, and PDF/Word/Excel generation are plugged in as Skills.
 
-### 核心特性
+### Core Features
 
-- 🤖 **通用 Agent 内核**：基于 DeepAgents，支持任务规划、工具调度、状态管理
-- 🔌 **可插拔 Skills 系统**：文档提取（MinerU）、Word/Excel 处理、Markdown 转 PDF、网页设计、视频演示等技能扩展
-- 🌊 **SSE 流式响应**：实时推送对话内容、工具调用状态、思考过程，思考与最终答案分离渲染
-- 👤 **人机协作（HITL）**：关键操作前支持用户审批/拒绝
-- 📁 **多模态支持**：图片、文档（PDF/Word/Excel/Markdown）上传与解析
-- 📦 **产物自动检测**：对话过程中生成的文件自动检测并推送给前端
-- 💬 **多渠道接入**：微信、企业微信渠道桥接
-- 🖥️ **跨平台前端**：Web + 桌面（Tauri 2）+ 移动端，基于 Vue 3 + TypeScript
-- 🔧 **可配置 API 地址**：前端设置面板可动态配置后端服务地址
-- 🔐 **多层安全沙箱**：Shell 命令白名单、Skill 脚本白名单、写路径沙箱、curl host 白名单、token 级路径改写
-- 🧠 **多 LLM Provider**：支持 agnes（默认）/ deepseek 通过环境变量切换
+- 🤖 **General Agent Kernel** — built on DeepAgents, supports task planning, tool scheduling, and state management
+- 🔌 **Pluggable Skills System** — MinerU document extraction, Word/Excel processing, Markdown-to-PDF, daily reports, web design, video presentation, and more
+- 🌊 **SSE Streaming Response** — real-time streaming of conversation content, tool call status, and thinking process; thinking content and final answer are rendered separately
+- 👤 **Human-in-the-Loop (HITL)** — supports user approval / rejection before critical operations
+- 📁 **Multimodal Support** — image and document (PDF / Word / Excel / Markdown) upload and parsing
+- 📦 **Automatic Artifact Detection** — files generated during a conversation are auto-detected and pushed to the frontend
+- 💬 **Multi-Channel Access** — WeChat and WeCom channel bridges
+- 🖥️ **Cross-Platform Frontend** — Web + Desktop (Tauri 2) + Mobile, based on Vue 3 + TypeScript
+- 🔧 **Configurable API URL** — backend address can be set dynamically from the frontend settings panel
+- 🔐 **Multi-Layer Sandbox** — shell command whitelist, Skill script whitelist, write-path sandbox, curl host whitelist, token-level path rewriting
+- 🧠 **Multi-LLM Provider** — switch between agnes (default) and deepseek via environment variables
+- 🔎 **Multi-Provider Search Failover** — Tavily → Brave → Serper → DuckDuckGo, with 1-hour cooldown on quota errors and DuckDuckGo as the final fallback
+- 💾 **SQLite Task Plan Persistence** — thread state (messages / todos / files / pending interrupts) survives process restarts; HITL resume works across restarts
+- 🧩 **Subagent Observability** — `task()` calls stream `subagent_start` / `subagent_done` events with nested tool-call steps to the frontend task panel
 
-## 技术栈
+## Tech Stack
 
-### 后端
+### Backend (Python)
 - Python 3.10+
-- FastAPI + uvicorn + sse-starlette（SSE 服务）
-- DeepAgents + LangGraph（Agent 编排）
-- LangChain（模型与工具集成）
-- 可选：Langfuse（可观测性）
+- FastAPI + uvicorn + sse-starlette (SSE service)
+- DeepAgents + LangGraph (agent orchestration)
+- LangChain (model & tool integration)
+- `langgraph-checkpoint-sqlite` (thread state persistence)
+- Optional: Langfuse (observability)
 
-### 前端
+### Frontend
 - Vue 3.5 + TypeScript 5.6
-- Tauri 2（跨平台桌面/移动端）
-- Vite 5.4（构建工具）
-- Tailwind CSS 3.4（样式）
-- Pinia 2.3（状态管理）
-- Vue Router 4.5（路由）
+- Tauri 2 (cross-platform desktop / mobile)
+- Vite 5.4 (build tooling)
+- Tailwind CSS 3.4 (styling)
+- Pinia 2.3 (state management)
+- Vue Router 4.5 (routing)
+- Reka UI 2 (headless UI primitives)
+- marked + Shiki (Markdown rendering & code highlighting)
+- DOMPurify (HTML sanitization)
 
-## 快速开始
+## Quick Start
 
-### 环境准备
+### Prerequisites
 
 1. Python 3.10+
-2. Node.js 18+
-3. npm 或 pnpm
+2. Node.js 20+
+3. npm ≥ 10
+4. Rust toolchain (required for desktop & mobile builds)
+5. Platform-specific Tauri deps: https://tauri.app/start/prerequisites/
 
-### 后端启动
+### Backend Startup
 
-1. 安装 Python 依赖：
+1. Install Python dependencies:
 
 ```bash
 pip install -r requirement.txt
 ```
 
-2. 配置环境变量（可选，创建 `.env` 文件）：
+2. Configure environment variables (optional, create a `.env` file):
 
 ```env
-# === LLM Provider 切换（agnes | deepseek）===
+# === LLM Provider switch (agnes | deepseek) ===
 LLM_PROVIDER=agnes
 
-# agnes 配置（默认）
+# agnes config (default)
 AGNES_MODEL=agnes-2.0-flash
 AGNES_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
 AGNES_API_KEY=your-agnes-key
 
-# deepseek 配置（LLM_PROVIDER=deepseek 时使用）
+# deepseek config (used when LLM_PROVIDER=deepseek)
 # DEEPSEEK_MODEL=deepseek-chat
 # DEEPSEEK_BASE_URL=https://api.deepseek.com
 # DEEPSEEK_API_KEY=your-deepseek-key
 
-# === MinerU 文档提取 Skill（可选）===
+# === MinerU document extraction Skill (optional) ===
 # MINERU_API_TOKEN=your-mineru-token
 # MINERU_TOKEN=your-mineru-token
 
-# === 服务配置 ===
+# === Search providers (leave blank to skip; failover: Tavily → Brave → Serper → DuckDuckGo) ===
+TAVILY_API_KEY=
+BRAVE_API_KEY=
+SERPER_API_KEY=
+SEARCH_PROVIDER_COOLDOWN_SECONDS=3600   # 1h cooldown after quota error
+
+# === Service config ===
 PORT=8000
 HOST=0.0.0.0
 HITL_ENABLED=true
-MAX_UPLOAD_SIZE=20971520    # 20MB，单位字节
+MAX_UPLOAD_SIZE=20971520    # 20MB, in bytes
 LOG_LEVEL=INFO
 
-# === 可选：Langfuse 可观测性 ===
+# === Optional: Langfuse observability ===
 # LANGFUSE_PUBLIC_KEY=...
 # LANGFUSE_SECRET_KEY=...
 # LANGFUSE_HOST=...
 ```
 
-3. 启动后端服务：
+3. Start the backend:
 
 ```bash
 python run.py
 ```
 
-服务默认运行在 `http://localhost:8000`
+Service runs at `http://localhost:8000` by default.
 
-**后端 API 端点：**
-- `GET /health` - 健康检查
-- `POST /upload` - 文件上传（图片/文档）
-- `POST /chat` - 发起/继续对话（返回 SSE 流）
-- `POST /chat/resume` - HITL 中断后提交审批决定
-- `GET /uploads/<filename>` - 上传文件静态访问
-- `GET /output/<filename>` - 生成产物静态访问
+**Backend API endpoints:**
+- `GET /health` — health check
+- `POST /upload` — file upload (images / documents)
+- `POST /chat` — start / continue a conversation (returns SSE stream)
+- `POST /chat/resume` — submit HITL approval decision after an interrupt
+- `GET /uploads/<filename>` — static access to uploaded files
+- `GET /output/<filename>` — static access to generated artifacts
 
-### 前端启动
+### Frontend Startup
 
-1. 进入前端目录：
+1. Enter the frontend directory:
 
 ```bash
 cd agent-frontend
 ```
 
-2. 安装依赖：
+2. Install dependencies:
 
 ```bash
 npm install
 ```
 
-3. 启动开发服务器：
+3. Start the dev server:
 
 ```bash
-# Web 开发模式
+# Web dev mode
 npm run dev
 
-# Tauri 桌面开发模式
+# Tauri desktop dev mode
 npm run tauri:dev
 ```
 
-4. 配置后端地址：
-   - 打开前端应用 → 设置面板
-   - 填写 API Base URL：`http://localhost:8000`
-   - 保存后即可开始对话
+4. Configure the backend URL:
+   - Open the frontend app → Settings panel
+   - Fill in API Base URL: `http://localhost:8000`
+   - Save and start chatting
 
-### 其他启动方式
+### Other Entry Points
 
-- **Mock SSE 服务**（前端调试用）：
+- **Mock SSE service** (for frontend debugging):
   ```bash
   npm run mock:sse
   ```
-
-- **微信渠道**：
+- **WeChat channel**:
   ```bash
   python run_wechat.py
   ```
-
-- **企业微信渠道**：
+- **WeCom channel**:
   ```bash
   python run_wecom.py
   ```
+- **Interactive CLI**:
+  ```bash
+  python demo.py
+  ```
 
-## 项目结构
+## Project Structure
 
 ```
 d:\project
-├── agent-frontend/          # Tauri + Vue 前端
+├── agent-frontend/              # Tauri + Vue frontend
 │   ├── src/
-│   │   ├── api/             # API 客户端与 SSE 处理
-│   │   ├── components/      # Vue 组件（聊天面板、布局、主题等）
-│   │   ├── composables/     # 组合式函数
-│   │   ├── router/          # 路由配置
-│   │   ├── stores/          # Pinia 状态管理（会话、设置）
-│   │   ├── styles/          # 全局样式
-│   │   ├── types/           # TypeScript 类型定义
-│   │   └── views/           # 页面视图
-│   ├── src-tauri/           # Tauri Rust 后端
-│   └── scripts/             # 工具脚本
-├── channels/                # 多渠道桥接
-│   ├── wechat/              # 微信渠道
-│   └── wecom/               # 企业微信渠道
-├── workspace/               # 工作目录（Agent 沙箱根）
-│   ├── skills/              # Skill 定义与实现
-│   │   ├── mineru/          # MinerU 文档提取 Skill（PDF/图片→Markdown）
-│   │   ├── excel-xlsx/      # Excel 处理 Skill
-│   │   ├── word-docx/       # Word 处理 Skill
-│   │   ├── md-to-pdf/       # Markdown 转 PDF Skill（含多套样式配方）
-│   │   ├── web-design-engineer/ # 网页设计 Skill
-│   │   └── web-video-presentation/ # 视频演示 Skill
-│   ├── uploads/             # 用户上传文件存储
-│   ├── output/              # 最终交付产物输出（前端可见）
-│   └── tmp/                 # 中间过程临时文件（前端不可见）
-├── agent_runtime.py         # Agent 运行时核心（LLM、backend、shell 沙箱、提示词、工具）
-├── run.py                   # FastAPI Web 服务入口
-├── run_wechat.py            # 微信渠道入口
-├── run_wecom.py             # 企业微信渠道入口
-├── ducktools.py             # DuckDuckGo 搜索工具
-├── html_tools.py            # HTML 渲染工具
-├── time_tools.py            # 时间工具
-├── demo.py                  # CLI 模式入口（与 Web 模式共享 agent 定义）
-├── requirement.txt          # Python 依赖
-├── README_ARCHITECTURE.md   # 架构设计文档（详细架构说明）
-├── deepagent指南.md         # DeepAgents 使用指南参考
-├── AGENTS参考.md            # Agent 设计参考
-└── .gitignore               # Git 忽略配置
+│   │   ├── api/                 # ofetch client + SSE consumption
+│   │   ├── components/
+│   │   │   ├── chat/            # ChatPanel, MessageBubble, FloatingTodoList, HitlApproval
+│   │   │   └── layout/          # AppShell, SessionItem, ThemeToggle
+│   │   ├── composables/         # useMarkdown, usePlatform, useShortcuts, useTheme
+│   │   ├── lib/                 # storage adapters (Tauri / IndexedDB)
+│   │   ├── router/              # Vue Router config
+│   │   ├── stores/              # Pinia stores (chat, sessions, settings)
+│   │   ├── styles/              # global CSS + theme tokens
+│   │   ├── types/               # shared TypeScript types (domain.ts)
+│   │   └── views/               # HomeView, SessionView, SettingsView
+│   ├── src-tauri/               # Tauri Rust shell
+│   └── scripts/                 # generate-icons, mock-sse-server
+├── agent_core/                  # agent core assembly package
+│   ├── config.py                # unified config: paths, LLM/HITL/upload/search toggles
+│   ├── llm.py                   # create_llm() + llm singleton
+│   ├── prompts.py               # SYSTEM_PROMPT + research_subagent definition
+│   └── runtime.py               # build_agent() factory + agent singleton + DualSqliteSaver
+├── sandbox/                     # ~1200-line shell sandbox (split from former agent_runtime.py)
+│   ├── backend.py               # _SkillsShellBackend (path rewriting + encoding)
+│   ├── whitelist.py             # _ShellWhitelistFilter (command whitelist) + assembled backend singleton
+│   ├── constants.py             # DEFAULT_ALLOWED_COMMANDS, _NODE_BUILD_COMMANDS
+│   └── path_rewriter.py         # shlex tokenization + token-level path rewriting
+├── tools/                       # flat tool package
+│   ├── web_search.py            # @tool web_search (uses tools/search/ failover chain)
+│   ├── render_html.py           # @tool render_html
+│   ├── get_current_time.py      # @tool get_current_time
+│   └── search/                  # search provider abstraction
+│       ├── base.py              # BaseSearchProvider, SearchQuery, SearchResult, QuotaExceededError
+│       ├── tavily.py            # TavilyProvider
+│       ├── brave.py             # BraveProvider
+│       ├── serper.py            # SerperProvider
+│       ├── duckduckgo.py        # DuckDuckGoProvider (fallback)
+│       └── registry.py          # failover orchestration
+├── artifacts/                   # unified artifact detection (eliminates former duplication)
+│   └── detector.py              # snapshot_output_dir, detect_new_artifacts
+├── entrypoints/                # entry implementations (root-level *.py are thin shims)
+│   ├── web.py                   # FastAPI + SSE Web Bridge (delegated by run.py)
+│   ├── cli.py                   # interactive terminal (delegated by demo.py)
+│   ├── wechat.py               # WeChat channel (delegated by run_wechat.py)
+│   └── wecom.py                # WeCom channel (delegated by run_wecom.py)
+├── channels/                    # multi-channel bridging
+│   ├── wechat/                  # WeChat channel (accounts, login, monitor, sender, ...)
+│   └── wecom/                   # WeCom channel (client, handlers, bridge)
+├── workspace/                  # agent sandbox root
+│   ├── skills/                  # Skill definitions & implementations
+│   │   ├── mineru/              # MinerU document extraction (PDF/image → Markdown)
+│   │   ├── excel-xlsx/          # Excel processing
+│   │   ├── word-docx/           # Word processing
+│   │   ├── md-to-pdf/           # Markdown → PDF (multiple style recipes)
+│   │   ├── daily-report/        # Daily report generation
+│   │   ├── web-design-engineer/ # Web design
+│   │   └── web-video-presentation/ # Video presentation
+│   ├── uploads/                 # user uploaded files
+│   ├── output/                  # final delivered artifacts (visible to frontend)
+│   ├── tmp/                     # intermediate temp files (not visible to frontend)
+│   └── state/                   # SQLite checkpoints (checkpoints.sqlite)
+├── tests/                       # test suite
+├── run.py                       # thin shim → entrypoints/web.py
+├── run_wechat.py                # thin shim → entrypoints/wechat.py
+├── run_wecom.py                 # thin shim → entrypoints/wecom.py
+├── demo.py                      # thin shim → entrypoints/cli.py
+├── requirement.txt              # Python dependencies
+├── README.md                    # this file (English)
+├── README.zh-CN.md              # Chinese README
+├── README_ARCHITECTURE.md       # architecture design document
+├── AGENTS参考.md                # Agent design reference
+└── deepagent指南.md              # DeepAgents usage guide
 ```
 
-## 当前进度
+## Progress
 
-### ✅ 已完成
+### ✅ Completed
 
-- [x] 后端 FastAPI 服务框架搭建
-- [x] SSE 流式对话（text/event-stream），支持 async 异步生成器
-- [x] DeepAgents 集成与 Agent 单例懒加载（初始化失败持久化错误状态）
-- [x] 前端 Vue 3 + Tauri 2 项目搭建
-- [x] 聊天界面与会话管理
-- [x] Markdown 渲染与代码高亮（Shiki）
-- [x] 文件上传（图片、PDF、Word、Excel、Markdown，20MB 限制）
-- [x] 多模态图片输入支持（含模型不支持 vision 时的降级提示）
-- [x] HITL 人机协作审批流程（web_search、execute 工具）
-- [x] 前端可配置 API Base URL
-- [x] 微信/企业微信渠道桥接
-- [x] Skills 系统（mineru 文档提取、excel-xlsx、word-docx、md-to-pdf、web-design-engineer、web-video-presentation）
-- [x] **思考与最终答案分离**：基于消息结构路由，thinking_delta 进折叠区，delta 进主答案区
-- [x] **产物自动检测**：对话前后对比 output/ 目录，新增文件通过 artifact 事件推送前端
-- [x] **多层安全沙箱**（agent_runtime.py）：
-  - Shell 命令白名单（python/ls/cat 等只读探查 + Node 构建链）
-  - Skill 脚本白名单（启动时 glob `skills/*/scripts/*.{py,sh}`，新增脚本重启即生效）
-  - python -c/-m/- 与 bash -c/-s 内联代码拦截
-  - 写路径沙箱（仅允许 output/、tmp/，skills/ 子树完全只读）
-  - curl host 白名单（仅放行 api.openai.com 供 TTS 使用）
-  - 命令替换语法（反引号、$()）拦截
-  - token 级路径改写（兼容 /skills/...、D:\skills\... 等变形，不破坏 JSON 引号）
-  - utf-8/gbk 双解码 + 强制 PYTHONUTF8=1（Windows 中文兼容）
-- [x] 多 LLM Provider 切换（agnes 默认 / deepseek）
-- [x] SSE ping 保活（15秒间隔）
-- [x] TypeScript 完整 SSE 事件类型处理（无 default case）
-- [x] Langfuse 可观测性集成（未配置时自动降级）
+- [x] Backend FastAPI service framework
+- [x] SSE streaming chat (`text/event-stream`) with async generators
+- [x] DeepAgents integration with lazy-loaded singleton (init failure persisted as error state)
+- [x] Frontend Vue 3 + Tauri 2 scaffolding
+- [x] Chat UI & session management
+- [x] Markdown rendering + code highlighting (Shiki)
+- [x] File upload (images, PDF, Word, Excel, Markdown; 20MB limit)
+- [x] Multimodal image input (with graceful fallback when model lacks vision)
+- [x] HITL approval flow (`web_search`, `execute` tools)
+- [x] Frontend-configurable API Base URL
+- [x] WeChat / WeCom channel bridging
+- [x] Skills system (mineru, excel-xlsx, word-docx, md-to-pdf, daily-report, web-design-engineer, web-video-presentation)
+- [x] **Thinking / final answer separation** — message-structure-based routing; `thinking_delta` → collapsible area, `delta` → main answer area
+- [x] **Automatic artifact detection** — pre/post conversation diff of `output/`; new files pushed via `artifact` events
+- [x] **Multi-layer sandbox** (in `sandbox/` package):
+  - Shell command whitelist (python/ls/cat read-only probes + Node build chain)
+  - Skill script whitelist (glob `skills/*/scripts/*.{py,sh}` at startup; new scripts require restart)
+  - Inline `python -c/-m/-` and `bash -c/-s` interception
+  - Write-path sandbox (only `output/` and `tmp/` writable; `skills/` subtree fully read-only)
+  - curl host whitelist (only `api.openai.com` allowed for TTS)
+  - Command substitution syntax (backticks, `$()`) interception
+  - Token-level path rewriting (handles `/skills/...`, `D:\skills\...` and other variants; preserves JSON quotes)
+  - utf-8/gbk dual decoding + forced `PYTHONUTF8=1` (Windows Chinese compatibility)
+- [x] Multi-LLM Provider switch (agnes default / deepseek)
+- [x] SSE ping keepalive (15s interval)
+- [x] TypeScript SSE event handling (no default case in switch)
+- [x] Langfuse observability integration (auto-degrades when unconfigured)
+- [x] **Code reorganization** — root-level `agent_runtime.py` / `ducktools.py` / `html_tools.py` / `time_tools.py` split into `agent_core/`, `sandbox/`, `tools/`, `entrypoints/`, `artifacts/` packages; unified `build_agent()` factory eliminates the former three divergent agent configurations
+- [x] **SQLite task plan persistence** — `DualSqliteSaver` (sync + async) replaces `BoundedMemorySaver`; thread state (messages / todos / files / pending interrupts) survives restarts; HITL resume works across restarts; WAL mode + busy_timeout + global lock for concurrent safety
+- [x] **Multi-provider search failover** — `Tavily → Brave → Serper → DuckDuckGo` chain; providers with empty API keys are skipped; quota errors trigger 1-hour cooldown; non-quota errors skip without cooldown; DuckDuckGo as final fallback
+- [x] **Subagent observability** — backend opens `subgraphs=True` and emits `subagent_start` / `subagent_done` SSE events with nested `tool_call` / `tool_result` steps (carrying `subagentId`); frontend `FloatingTodoList` renders per-`subagentId` cards with nested steps
+- [x] **daily-report Skill** added to the Skill library
 
-### 🔧 进行中 / 待完善
+### 🔧 In Progress / TODO
 
-- [ ] 完整的 Skill 注册与发现机制
-- [ ] 任务计划持久化与断点续传
-- [ ] 更多 Skill 实现（PPT生成、数据分析、图表生成等）
-- [ ] 移动端适配优化
-- [ ] 用户认证与权限系统
-- [ ] 知识库检索集成
-- [ ] 生产环境部署方案（对象存储、远程沙箱等）
+- [ ] Complete Skill registry & discovery mechanism
+- [ ] More Skill implementations (PPT generation, data analysis, chart generation, etc.)
+- [ ] Mobile adaptation polish
+- [ ] User authentication & permission system
+- [ ] Knowledge base retrieval integration
+- [ ] Production deployment (object storage, remote sandbox, etc.)
 
-### 📋 已知问题与注意事项
+### 📋 Known Issues & Notes
 
-- 前端开发时需确保后端 SSE 服务正常运行，否则消息无法显示
-- Python 依赖需安装 `fastapi>=0.110`、`uvicorn[standard]>=0.27`、`sse-starlette>=2.0` 以支持 SSE
-- SSE 流必须使用 `async def` 异步生成器和 `agent.astream()`，否则会阻塞事件循环
-- TypeScript 中需显式处理所有 SSE 事件类型（无 default case）
-- **安全沙箱约束**：Agent 写文件只能落 `output/` 或 `tmp/`，`skills/` 子树完全只读；新增 skill 脚本需放在 `workspace/skills/<name>/scripts/` 下并重启服务才生效
-- **路径写法**：SKILL.md 里写 `/skills/...`、`D:\skills\...`、`skills/...` 都会被 token 级改写器统一成相对路径，但写产物时必须用 `output/xxx` 相对路径
-- **curl 出网**：仅放行 `api.openai.com`（web-video-presentation 的 TTS 用），其他 host 一律拦截；新增 TTS 后端需修改 `_CURL_ALLOWED_HOSTS`
+- Frontend dev requires the backend SSE service to be running, otherwise messages won't display
+- Python deps require `fastapi>=0.110`, `uvicorn[standard]>=0.27`, `sse-starlette>=2.0` for SSE support
+- SSE streams must use `async def` generators and `agent.astream()`; otherwise the event loop blocks
+- TypeScript must explicitly handle all SSE event types (no default case)
+- **Sandbox constraints**: agent writes can only land in `output/` or `tmp/`; `skills/` subtree is fully read-only; new skill scripts must be placed under `workspace/skills/<name>/scripts/` and require a service restart to take effect
+- **Path conventions**: SKILL.md may use `/skills/...`, `D:\skills\...`, or `skills/...` — the token-level rewriter unifies them to relative paths; when writing artifacts, you must use the `output/xxx` relative path
+- **curl egress**: only `api.openai.com` is allowed (for web-video-presentation TTS); all other hosts are blocked; adding a new TTS backend requires modifying `_CURL_ALLOWED_HOSTS`
+- **Search providers**: at least one of Tavily / Brave / Serper should have an API key for the best experience; if all three are unconfigured, the chain falls back to DuckDuckGo only
 
-## 架构文档
+## Architecture Document
 
-详细的架构设计、模块职责、技术选型路线请参考：[README_ARCHITECTURE.md](file:///d:/project/README_ARCHITECTURE.md)
+For detailed architecture design, module responsibilities, and technology roadmap, see [README_ARCHITECTURE.md](file:///d:/project/README_ARCHITECTURE.md).
 
-## 开发说明
+## Development Notes
 
-### SSE 事件格式
+### SSE Event Format
 
-前后端通过 SSE 通信，事件类型包括：
+The frontend and backend communicate via SSE. Event types:
 
-| 事件类型 | 说明 |
-|---------|------|
-| `start` | 对话开始，包含 messageId |
-| `delta` | 最终答案文本增量（无 tool_call_chunks 的 AIMessageChunk content） |
-| `thinking` | 思考开始标记（无文本输出时的心跳指示） |
-| `thinking_delta` | 思考过程文本增量（reasoning_content 或工具调用轮过渡语，进折叠区） |
-| `tool_call` | 模型决定调工具（callId、name、args），状态 running |
-| `tool_result` | 工具执行返回（callId、name、output），状态 completed |
-| `tool` | 旧协议兼容事件（降级路径，新代码不产生） |
-| `interrupt` | HITL 中断，等待用户审批（toolCalls 列表） |
-| `artifact` | 检测到新生成的产物文件（name、path、url、mime、size） |
-| `usage` | Token 使用统计 |
-| `ping` | 心跳保活（15秒间隔） |
-| `done` | 对话结束 |
-| `error` | 错误信息 |
+| Event | Description |
+|-------|-------------|
+| `start` | conversation start, includes messageId |
+| `delta` | final-answer text increment (AIMessageChunk content without `tool_call_chunks`) |
+| `thinking` | thinking-area start marker (heartbeat when no text output) |
+| `thinking_delta` | thinking-process text increment (`reasoning_content` or tool-call round transitions; goes to collapsible area) |
+| `tool_call` | model decides to call a tool (callId, name, args, optional `subagentId`); status = running |
+| `tool_result` | tool execution result (callId, name, output, optional `subagentId`); status = completed |
+| `subagent_start` | `task()` subagent launched (subagentId, subagentType, description) |
+| `subagent_done` | `task()` subagent finished (subagentId) |
+| `tool` | legacy compat event (degraded path; new code does not emit this) |
+| `interrupt` | HITL interrupt awaiting user approval (toolCalls list) |
+| `artifact` | new artifact file detected (name, path, url, mime, size) |
+| `usage` | token usage stats |
+| `ping` | keepalive (15s interval) |
+| `done` | conversation end |
+| `error` | error message |
 
-**思考与最终答案分离机制**：基于消息结构路由，不依赖模型输出文本标记。
-- `reasoning_content` 或工具调用轮的 content → `thinking_delta`（前端折叠区）
-- 无 `tool_call_chunks` 的 AIMessageChunk content → `delta`（前端主答案区）
+**Thinking vs final answer separation mechanism** — based on message-structure routing, not on model output text markers:
+- `reasoning_content` or tool-call round `content` → `thinking_delta` (frontend collapsible area)
+- AIMessageChunk `content` without `tool_call_chunks` → `delta` (frontend main answer area)
 
-### 前端开发命令
+**Subagent event semantics** — when the main agent invokes `task()`, the backend opens `subgraphs=True` and identifies subagent chunks via the langgraph namespace (`tools:<tid>`):
+- On first subagent chunk → emit `subagent_start` (subagentId = base namespace)
+- Subagent internal `ToolMessage`s → emit `tool_call` / `tool_result` carrying `subagentId`
+- On parent `task()` ToolMessage → emit `subagent_done` and skip duplicate tool_call/tool_result
+
+### Frontend Dev Commands
 
 ```bash
-npm run dev          # Web 开发
-npm run build        # 构建生产版本
-npm run build:web    # Web 模式构建
-npm run tauri:dev    # Tauri 桌面开发
-npm run tauri:build  # Tauri 桌面构建
-npm run lint         # ESLint 检查修复
-npm run format       # Prettier 格式化
+npm run dev              # Web dev
+npm run build            # production build
+npm run build:web        # Web mode build
+npm run tauri:dev        # Tauri desktop dev
+npm run tauri:build      # Tauri desktop build
+npm run tauri:build:android   # Android build
+npm run tauri:build:ios       # iOS build (macOS only)
+npm run lint             # ESLint check & fix
+npm run format           # Prettier format
 ```
 
 ## License
 
-待定
+TBD

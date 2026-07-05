@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup } from '@/types/domain'
+import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup, KbReference } from '@/types/domain'
 import { sendChatMessage, resumeChat, fetchHistory } from '@/api/chat'
 
 export type ChatMessage = Message
@@ -41,6 +41,37 @@ function parseTodosFromArgs(args: string | Record<string, any> | undefined): Tod
     }
   }
   return todos
+}
+
+/**
+ * 从 kb_search 的 output 里解析引用来源元数据。
+ * 后端在 output 末尾附加 `<!--KB_REFS:[{...}]-->` HTML 注释行,
+ * LLM 会忽略,前端用正则提取后渲染引用来源面板。
+ * 解析失败或无匹配返回 null(不更新 kbReferences)。
+ */
+function parseKbRefsFromOutput(output: string | undefined): KbReference[] | null {
+  if (!output) return null
+  const match = output.match(/<!--KB_REFS:(.+?)-->/s)
+  if (!match) return null
+  try {
+    const arr = JSON.parse(match[1])
+    if (!Array.isArray(arr)) return null
+    const refs: KbReference[] = []
+    for (const item of arr) {
+      if (item && typeof item === 'object') {
+        refs.push({
+          source: String(item.source ?? ''),
+          section: String(item.section ?? ''),
+          text: String(item.text ?? ''),
+          score: Number(item.score ?? 0),
+          chunkId: String(item.chunk_id ?? ''),
+        })
+      }
+    }
+    return refs
+  } catch {
+    return null
+  }
 }
 
 interface SendOptions {
@@ -324,6 +355,20 @@ export const useChatStore = defineStore('chat', () => {
             if (payload.name === 'task') return
             // 子智能体内部工具返回 → 补全对应子 agent 卡片的 step
             if (payload.subagentId) {
+              // kb_search: 解析 output 末尾的 <!--KB_REFS:...--> 元数据,
+              // 塞进 msg.kbReferences 供最终答案下方引用面板渲染
+              if (payload.name === 'kb_search') {
+                const refs = parseKbRefsFromOutput(payload.output)
+                if (refs && refs.length > 0) {
+                  if (!msg.kbReferences) msg.kbReferences = []
+                  // 去重(按 chunkId),避免多次 kb_search 调用重复堆叠
+                  for (const r of refs) {
+                    if (!msg.kbReferences.find((x) => x.chunkId === r.chunkId)) {
+                      msg.kbReferences.push(r)
+                    }
+                  }
+                }
+              }
               finishSubagentStep(sessionId, payload.subagentId, payload)
               return
             }
@@ -485,6 +530,18 @@ export const useChatStore = defineStore('chat', () => {
           if (payload.name === 'write_todos') return
           if (payload.name === 'task') return
           if (payload.subagentId) {
+            // kb_search: 同 send 流程,解析引用元数据
+            if (payload.name === 'kb_search') {
+              const refs = parseKbRefsFromOutput(payload.output)
+              if (refs && refs.length > 0) {
+                if (!msg.kbReferences) msg.kbReferences = []
+                for (const r of refs) {
+                  if (!msg.kbReferences.find((x) => x.chunkId === r.chunkId)) {
+                    msg.kbReferences.push(r)
+                  }
+                }
+              }
+            }
             finishSubagentStep(sessionId, payload.subagentId, payload)
             return
           }

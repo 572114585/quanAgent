@@ -238,6 +238,7 @@ function onDecide(groups: ResumeGroup[]) {
           :error="m.error"
           :attachments="m.attachments"
           :artifacts="m.artifacts"
+          :kb-references="m.kbReferences"
           :can-regenerate="m.role === 'assistant' && (m.status === 'complete' || m.status === 'cancelled' || (m.artifacts && m.artifacts.length > 0))"
           @regenerate="chat.regenerate(props.session.id)"
         />

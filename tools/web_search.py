@@ -74,8 +74,8 @@ def _fetch_webpage(url: str) -> str:
         too_large = False
         text = ""
         with httpx.stream(
+            "GET",
             url,
-            method="GET",
             timeout=_FETCH_TIMEOUT,
             follow_redirects=True,
             headers={"User-Agent": _UA},

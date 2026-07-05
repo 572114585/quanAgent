@@ -61,6 +61,20 @@ export interface ToolCallRecord {
   error?: string
 }
 
+/** 知识库引用来源（从 kb_search 的 output 里解析的 <!--KB_REFS:...--> 元数据） */
+export interface KbReference {
+  /** 来源文件路径 */
+  source: string
+  /** 所属章节（H2 标题） */
+  section: string
+  /** 命中的文档片段文本 */
+  text: string
+  /** 相关度分数（RRF 融合后） */
+  score: number
+  /** chunk id（用于去重） */
+  chunkId: string
+}
+
 export interface Message {
   id: string
   sessionId: string
@@ -81,6 +95,8 @@ export interface Message {
   error?: string
   pendingInterruptGroups?: InterruptGroup[]
   usage?: { prompt: number; completion: number }
+  /** 知识库引用来源（从 research-agent 的 kb_search 结果解析）—— 渲染在最终答案下方的专属面板 */
+  kbReferences?: KbReference[]
 }
 
 export interface Session {

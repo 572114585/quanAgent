@@ -18,7 +18,10 @@ from urllib.parse import quote, urlparse
 
 from langchain_core.tools import tool
 
-from agent_core.config import WORKSPACE_ROOT, OUTPUT_DIR
+# 注意:不在此处顶层 import agent_core.config,避免循环 import
+# (tools/__init__.py 加载本模块 → agent_core.config → agent_core/__init__.py →
+#  runtime.py → from tools.render_html import render_html → 部分初始化 → ImportError)
+# 改为函数内懒加载,运行时才取值。
 
 
 # render_html 工具的默认视口宽高，覆盖多数桌面端落地页/仪表盘场景。
@@ -141,6 +144,9 @@ def render_html(
 
     返回渲染结果或错误信息（中文）。
     """
+    # 懒加载 agent_core.config(避免顶层 import 触发循环)
+    from agent_core.config import WORKSPACE_ROOT, OUTPUT_DIR
+
     is_url = isinstance(html_path, str) and html_path.strip().startswith(("http://", "https://"))
 
     try:
