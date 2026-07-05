@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Three.js importmap 模板(用 OrbitControls 等 addons)</title>
+  <!--
+    Three.js ES Module + importmap 模式
+    用途:需要使用 examples/jsm/ 下的 addons(OrbitControls / GLTFLoader / STLLoader 等)
+    注意:addons 不是独立 npm 包,必须通过 three/addons/ 路径加载
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <style>
+    body { margin: 0; overflow: hidden; background: #1a1a1a; }
+    canvas { display: block; }
+    #info { position: absolute; top: 10px; left: 10px; color: #fff; font-family: monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="info">拖拽旋转 · 滚轮缩放 · 右键平移</div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    // 其他常用 addons:
+    // import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    // import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a1a);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(2, 2, 3);
+
+    // preserveDrawingBuffer:true 是 PNG 截图必需
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // OrbitControls — 拖拽旋转、滚轮缩放、右键平移
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // 光照
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const dir = new THREE.DirectionalLight(0xffffff, 1);
+    dir.position.set(2, 2, 2);
+    scene.add(dir);
+
+    // 立方体
+    const cube = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x2563EB, metalness: 0.5, roughness: 0.3 })
+    );
+    scene.add(cube);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      cube.rotation.x += 0.005;
+      cube.rotation.y += 0.005;
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

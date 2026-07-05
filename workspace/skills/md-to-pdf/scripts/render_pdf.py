@@ -10,6 +10,13 @@ render_pdf.py — HTML → PDF(Playwright async API)
         --out output/report.pdf \
         --page-size A4
 
+    # 渲染含重型 JS 库(echarts/Three.js/Rive/Mapbox)的 PDF
+    python skills/md-to-pdf/scripts/render_pdf.py \
+        --html output/report.html \
+        --out output/report.pdf \
+        --page-size A4 \
+        --wait-ms 3000
+
     # 验证已生成的 PDF
     python skills/md-to-pdf/scripts/render_pdf.py --verify output/report.pdf
 
@@ -42,14 +49,16 @@ PAGE_SIZES = {
 
 
 async def render_html_to_pdf(html_path: Path, pdf_path: Path,
-                              page_size: str, timeout_ms: int) -> dict:
+                              page_size: str, timeout_ms: int,
+                              wait_ms: int = 1000) -> dict:
     """用 Playwright 把 HTML 渲染为 PDF。
 
     关键参数(已验证):
-      - wait_until='networkidle'  等网络图片加载完
-      - wait_for_timeout(1000)    等字体/图表渲染
-      - print_background=True     保留背景色
-      - prefer_css_page_size=True 优先用 CSS @page size(让模板的 @page 生效)
+      - wait_until='networkidle'   等网络图片加载完
+      - wait_for_timeout(wait_ms)  等字体/图表/JS 库渲染(默认 1000ms,
+                                    重型库如 echarts/Three.js/Rive/Mapbox 建议 2000-3000ms)
+      - print_background=True      保留背景色
+      - prefer_css_page_size=True  优先用 CSS @page size(让模板的 @page 生效)
     """
     if not html_path.exists():
         print(f"[ERROR] HTML 文件不存在: {html_path}", file=sys.stderr)
@@ -65,8 +74,9 @@ async def render_html_to_pdf(html_path: Path, pdf_path: Path,
 
             # 加载 HTML,等网络空闲(图片/字体加载完)
             await page.goto(html_uri, wait_until="networkidle", timeout=timeout_ms)
-            # 额外等待 1s,确保字体/Chart.js/延迟渲染完成
-            await page.wait_for_timeout(1000)
+            # 额外等待 wait_ms,确保字体/图表/JS 库渲染完成
+            # (重型库如 echarts/Three.js/Rive/Mapbox 建议传 2000-3000)
+            await page.wait_for_timeout(wait_ms)
 
             # 统计图片加载情况
             img_info = await page.evaluate(
@@ -155,6 +165,7 @@ async def main_async(args):
         pdf_path=pdf_path,
         page_size=args.page_size,
         timeout_ms=args.timeout * 1000,
+        wait_ms=args.wait_ms,
     )
 
     img = result["img_info"]
@@ -184,6 +195,9 @@ def main():
                         help="纸张大小(默认 A4,CSS @page 优先)")
     parser.add_argument("--timeout", type=int, default=30,
                         help="页面加载超时秒数(默认 30)")
+    parser.add_argument("--wait-ms", type=int, default=1000,
+                        help="页面加载后额外等待毫秒(默认 1000,"
+                             "重型 JS 库如 echarts/Three.js/Rive/Mapbox 建议 2000-3000)")
     parser.add_argument("--verify", metavar="PDF_PATH",
                         help="验证已生成的 PDF(文件大小/页数)")
     args = parser.parse_args()

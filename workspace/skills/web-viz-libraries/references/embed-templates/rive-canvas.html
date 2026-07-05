@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Rive Canvas 模板</title>
+  <!--
+    Rive @rive-app/canvas 2.17 — UMD + wasm,首次加载慢
+    .riv 文件从 rive.app community 下载或自己制作(editor.rive.app)
+  -->
+  <script src="https://unpkg.com/@rive-app/canvas@2.17.3"></script>
+  <style>
+    body { margin: 0; background: #1a1a1a; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    canvas { max-width: 500px; max-height: 500px; }
+  </style>
+</head>
+<body>
+  <canvas id="rive-canvas" width="500" height="500"></canvas>
+  <script>
+    // TODO: 替换 src 为你的 .riv 文件路径
+    // .riv 文件来源:https://rive.app/community
+    new RiveCanvas.Rive({
+      src: 'YOUR_RIV_FILE.riv',
+      canvas: document.getElementById('rive-canvas'),
+      autoplay: true,
+      // 状态机名(可选,从 .riv 文件中读取)
+      // stateMachines: 'State Machine 1',
+      fit: RiveCanvas.Fit.Contain,
+      alignment: RiveCanvas.Alignment.Center
+    });
+  </script>
+</body>
+</html>

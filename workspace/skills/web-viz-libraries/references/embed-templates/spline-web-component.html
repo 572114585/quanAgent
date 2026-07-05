@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Spline Web Component 模板</title>
+  <!--
+    Spline viewer 1.9 — Web Component 模式
+    注意:script 必须用 type="module"
+    scene URL 从 spline.design → Export → Copy Embed URL 获取
+  -->
+  <script type="module" src="https://unpkg.com/@splinetool/viewer@1.9.82/build/spline-viewer.js"></script>
+  <style>
+    body { margin: 0; background: #1a1a1a; }
+    spline-viewer {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <!-- TODO: 替换 url 为你的 scene URL(从 spline.design Export 获取) -->
+  <spline-viewer url="https://prod.spline.design/YOUR_SCENE_ID/scene.splinecode"></spline-viewer>
+</body>
+</html>

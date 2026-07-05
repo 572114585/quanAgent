@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Mapbox GL JS 暗色地图模板</title>
+  <!-- Mapbox GL JS 3.2 — 需要 JS + CSS 两个 CDN -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.2.0/mapbox-gl.css" rel="stylesheet">
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.2.0/mapbox-gl.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    // TODO: 替换为你的 Mapbox token
+    // 获取地址:https://account.mapbox.com/access-tokens/
+    mapboxgl.accessToken = 'YOUR_MAPBOX_TOKEN';
+
+    const map = new mapboxgl.Map({
+      container: 'map',
+      // 暗色样式;其他可选:streets-v12 / light-v10 / satellite-v9 / satellite-streets-v12
+      style: 'mapbox://styles/mapbox/dark-v11',
+      center: [116.404, 39.915],  // 北京天安门
+      zoom: 10
+    });
+
+    // 添加一个标记
+    map.on('load', () => {
+      new mapboxgl.Marker({ color: '#EF4444' })
+        .setLngLat([116.404, 39.915])
+        .setPopup(new mapboxgl.Popup().setHTML('<h3>北京</h3>'))
+        .addTo(map);
+    });
+
+    // 添加导航控件(缩放/旋转按钮)
+    map.addControl(new mapboxgl.NavigationControl());
+  </script>
+</body>
+</html>

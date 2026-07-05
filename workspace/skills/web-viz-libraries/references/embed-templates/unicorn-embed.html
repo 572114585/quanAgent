@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Unicorn Studio Embed 模板</title>
+  <!--
+    Unicorn Studio embed — No-code WebGL 互动特效
+    project ID 从 unicorn.studio → 打开项目 → Export → Embed → HTML 获取
+    embed.js 的具体 URL 以 Export 给的为准
+  -->
+  <script src="https://cdn.unicorn.studio/embed.js"></script>
+  <style>
+    body { margin: 0; background: #000; }
+    .unicorn-embed {
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+    }
+  </style>
+</head>
+<body>
+  <!-- TODO: 替换 data-us-project 为你的 project ID(从 unicorn.studio Export 获取) -->
+  <div class="unicorn-embed" data-us-project="YOUR_PROJECT_ID"></div>
+</body>
+</html>
