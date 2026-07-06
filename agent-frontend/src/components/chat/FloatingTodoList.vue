@@ -152,14 +152,11 @@ function stepSummary(step: SubagentStep): string {
 <template>
   <div
     v-if="hasContent"
-    class="absolute top-3 right-3 z-30 w-[min(80%,320px)] md:w-72 animate-slide-up"
+    class="shrink-0 w-full md:w-80 flex flex-col border-t md:border-t-0 md:border-l border-border bg-surface-elevated md:h-full animate-slide-up md:order-2 overflow-hidden"
   >
-    <div
-      class="rounded-xl border border-border bg-surface-elevated/95 backdrop-blur-md shadow-lg overflow-hidden"
-    >
       <!-- 折叠态/展开态共用头部：点击切换 -->
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-muted/60 transition-colors"
+        class="w-full shrink-0 flex items-center gap-2 px-3 py-2.5 text-left hover:bg-surface-muted/60 transition-colors"
         @click="toggle"
       >
         <ListTodo class="size-4 shrink-0 text-accent" />
@@ -197,7 +194,7 @@ function stepSummary(step: SubagentStep): string {
       <!-- 展开态：任务列表 + 子智能体分区 -->
       <div
         v-show="expanded"
-        class="border-t border-border bg-surface-muted/30 max-h-[50vh] overflow-y-auto"
+        class="border-t border-border bg-surface-muted/30 flex-1 overflow-y-auto max-h-[40vh] md:max-h-none"
       >
         <!-- 主 agent 待办列表 -->
         <ol v-if="totalCount > 0" class="py-1">
@@ -301,6 +298,5 @@ function stepSummary(step: SubagentStep): string {
           </div>
         </div>
       </div>
-    </div>
   </div>
 </template>

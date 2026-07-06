@@ -1,7 +1,7 @@
 """LLM 工厂。
 
 从原 agent_runtime.py L1240-1258 拆出。根据 .env 中的 LLM_PROVIDER 创建对应的
-ChatOpenAI 实例（agnes / deepseek）。模块级 `llm` 单例保留，供直接复用。
+ChatOpenAI 实例（agnes / deepseek / sensenova）。模块级 `llm` 单例保留，供直接复用。
 """
 import os
 
@@ -20,6 +20,12 @@ def create_llm():
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             api_key=os.getenv("DEEPSEEK_API_KEY"),
+        )
+    elif provider == "sensenova":
+        return ChatOpenAI(
+            model=os.getenv("SENSENOVA_MODEL", "sensenova-6.7-flash-lite"),
+            base_url=os.getenv("SENSENOVA_BASE_URL", "https://token.sensenova.cn/v1"),
+            api_key=os.getenv("SENSENOVA_API_KEY"),
         )
     else:  # 默认 agnes
         return ChatOpenAI(

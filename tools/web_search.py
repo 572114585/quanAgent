@@ -62,7 +62,7 @@ def _is_safe_target_url(url: str) -> bool:
     return True
 
 
-def _fetch_webpage(url: str) -> str:
+def _fetch_webpage(url: str, max_content_chars: int = _MAX_CONTENT_CHARS) -> str:
     """抓取网页正文并转为 Markdown。失败时返回空字符串（降级为只给 snippet）。"""
     if not _is_safe_target_url(url):
         logger.warning("Refused to fetch unsafe URL (private/loopback): %s", url)
@@ -97,8 +97,8 @@ def _fetch_webpage(url: str) -> str:
             text = raw.decode(encoding, errors="replace")
         md = markdownify(text)
         if too_large:
-            md = md[:_MAX_CONTENT_CHARS] + "\n\n[...内容过长已截断...]"
-        return md[:_MAX_CONTENT_CHARS]
+            md = md[:max_content_chars] + "\n\n[...内容过长已截断...]"
+        return md[:max_content_chars]
     except Exception as e:
         # 抓取失败不阻断流程，调用方降级为只用 snippet；记录原因便于排查
         logger.warning("Fetch webpage failed: %s -> %s: %s", url, type(e).__name__, e)
@@ -106,8 +106,9 @@ def _fetch_webpage(url: str) -> str:
 
 
 @tool
-def web_search(query: str, max_results: int = 5, topic: str = "general") -> str:
-    """搜索网络，返回标题+链接+摘要，并对前2个结果抓取完整正文（转Markdown）。
+def web_search(query: str, max_results: int = 5, topic: str = "general",
+               fetch_top_n: int = _FETCH_TOP_N, max_content_chars: int = _MAX_CONTENT_CHARS) -> str:
+    """搜索网络，返回标题+链接+摘要，并对前N个结果抓取完整正文（转Markdown）。
 
     搜索源按 failover 顺序尝试:Tavily → Brave → Serper → DuckDuckGo。
     某个 provider 额度耗尽(HTTP 429/402)时自动冷却 1 小时并切换到下一个,
@@ -117,6 +118,9 @@ def web_search(query: str, max_results: int = 5, topic: str = "general") -> str:
         query: 搜索关键词
         max_results: 最大返回结果数，默认5
         topic: 搜索类型。'general' 通用搜索（默认），'news' 新闻搜索（优先返回近期资讯）
+        fetch_top_n: 对前N个结果抓取完整正文（转Markdown），默认2。
+                     传0表示不抓正文（广度搜索阶段用），传3+用于深度搜索阶段。
+        max_content_chars: 单篇正文截断字符数，默认4000。深度搜索阶段可提高到8000。
     """
     import asyncio
 
@@ -134,8 +138,8 @@ def web_search(query: str, max_results: int = 5, topic: str = "general") -> str:
             entry = f"[{r.title or '（无标题）'}]({r.url or '（无链接）'})\n{r.snippet or '（无摘要）'}"
 
             # 对前 N 个结果抓取正文，补充深度内容
-            if idx < _FETCH_TOP_N and r.url:
-                content = _fetch_webpage(r.url) if _is_safe_target_url(r.url) else ""
+            if idx < fetch_top_n and r.url:
+                content = _fetch_webpage(r.url, max_content_chars) if _is_safe_target_url(r.url) else ""
                 if content:
                     entry += f"\n\n## 正文\n{content}"
 
