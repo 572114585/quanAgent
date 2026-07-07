@@ -19,7 +19,7 @@ from agent_core.config import (
     ensure_runtime_dirs,
 )
 from agent_core.llm import create_llm, llm
-from agent_core.prompts import SYSTEM_PROMPT, research_subagent
+from agent_core.prompts import SYSTEM_PROMPT, research_subagent, section_writer
 from agent_core.runtime import agent, build_agent, new_thread_id
 
 __all__ = [
@@ -30,6 +30,7 @@ __all__ = [
     "llm",
     "SYSTEM_PROMPT",
     "research_subagent",
+    "section_writer",
     "WORKSPACE_ROOT",
     "OUTPUT_DIR",
     "TMP_DIR",

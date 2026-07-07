@@ -85,10 +85,16 @@ export const useSessionsStore = defineStore('sessions', () => {
     try {
       const backendSessions = await fetchSessions()
       if (backendSessions.length > 0) {
-        const existingIds = new Set(list.value.map((s) => s.id))
+        // 合并语义：后端 updatedAt 比 local 新 → 同步 updatedAt / messageCount
+        // 不覆盖 title（用户可能正在编辑）和 activeId 等本地状态
+        const byId = new Map(list.value.map((s) => [s.id, s]))
         for (const bs of backendSessions) {
-          if (!existingIds.has(bs.id)) {
+          const local = byId.get(bs.id)
+          if (!local) {
             list.value.push(bs)
+          } else if (bs.updatedAt > local.updatedAt) {
+            local.updatedAt = bs.updatedAt
+            local.messageCount = bs.messageCount
           }
         }
         list.value.sort((a, b) => b.updatedAt - a.updatedAt)

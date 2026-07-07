@@ -1,6 +1,8 @@
 # Print CSS System — 印刷级排版参考
 
-本文件是 `md-to-pdf` skill 的打印 CSS 技术参考。所有自包含模板(`templates/*.html`)的 `@page` 与分页配置都基于此处的规则;脚本 `md_to_html.py` 在 generic 模式下生成的 BASE_CSS 也遵循这些约定。
+本文件是 `md-to-pdf` skill 的打印 CSS 技术参考。LLM 用 `write_file output/custom.html` 自由设计 HTML 时,`<style>` 里的 `@page` 与分页配置都基于此处的规则;`references/showcase/{lite,medium,paper}/sample.html` 的印刷 CSS 也遵循这些约定。
+
+> 历史背景:早期版本有 `templates/*.html` 模板和 `md_to_html.py` 路由脚本,现已删除。当前模型是 LLM 自由设计自包含 HTML,本文件的所有规则同样适用——只是不再由脚本生成 BASE_CSS,而是由 LLM 参考 showcase + 本文件直接写进 custom.html 的 `<style>`。
 
 > 本文件只讲**打印介质**特有的规则。屏幕端 CSS 最佳实践(CSS 变量、oklch、Grid/Flex)不在此重复,见 `web-design-engineer` 的 `advanced-patterns.md`。
 

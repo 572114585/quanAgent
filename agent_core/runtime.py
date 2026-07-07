@@ -21,7 +21,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agent_core.config import CHECKPOINT_DB_PATH, ensure_runtime_dirs
 from agent_core.llm import create_llm
-from agent_core.prompts import SYSTEM_PROMPT, research_subagent
+from agent_core.prompts import SYSTEM_PROMPT, research_subagent, section_writer
 from sandbox import backend
 from tools import get_current_time, render_html
 
@@ -132,7 +132,7 @@ def build_agent(*, hitl: bool = False):
         system_prompt=SYSTEM_PROMPT,
         backend=backend,
         tools=[get_current_time, render_html],
-        subagents=[research_subagent],
+        subagents=[research_subagent, section_writer],
         interrupt_on=interrupt_on,
         checkpointer=get_checkpointer(),
         skills=["skills/"],

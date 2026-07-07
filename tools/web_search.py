@@ -2,7 +2,10 @@ from langchain_core.tools import tool
 import httpx
 import ipaddress
 import logging
+import os
+import re
 import socket
+from datetime import datetime
 from urllib.parse import urlparse
 from markdownify import markdownify
 
@@ -105,10 +108,68 @@ def _fetch_webpage(url: str, max_content_chars: int = _MAX_CONTENT_CHARS) -> str
         return ""
 
 
+def _extract_key_info(content: str) -> str:
+    """从正文中提取关键信息：前3句 + 含数字的句子（最多5句），供 LLM 了解正文概要。
+
+    不替代完整正文——完整正文已通过 save_to 直接写入文件。
+    """
+    lines = [l.strip() for l in content.split("\n") if l.strip()]
+    if not lines:
+        return ""
+
+    key_lines: list[str] = []
+    # 前3个非空行（通常是文章开头的概述）
+    for line in lines[:3]:
+        if len(line) > 10:
+            key_lines.append(line)
+    # 含数字/百分比的句子（数据点）
+    num_pattern = re.compile(r"\d+[.,]?\d*\s*[%亿万千百]?|CAGR|\$|增长率|市场|规模", re.IGNORECASE)
+    for line in lines:
+        if len(key_lines) >= 8:
+            break
+        if line not in key_lines and num_pattern.search(line) and len(line) > 15:
+            key_lines.append(line)
+
+    return "\n".join(f"  - {l}" for l in key_lines[:8])
+
+
+def _append_research_to_file(
+    filepath: str, query: str, provider: str, results: list, topic: str,
+    fetch_top_n: int, max_content_chars: int, phase: str = "",
+) -> None:
+    """把完整搜索结果（含全文正文）追加写入研究素材文件。不经 LLM，保证原始内容不丢失。"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    header = f"\n\n{'='*60}\n## 搜索记录 | {timestamp}\n- **关键词**: {query}\n- **来源**: {provider}\n- **类型**: {topic}\n- **阶段**: {phase or '未标注'}\n- **结果数**: {len(results)}\n{'='*60}\n"
+
+    parts = [header]
+    for idx, r in enumerate(results):
+        entry = f"\n### [{idx+1}] {r.title or '（无标题）'}\n**URL**: {r.url or '（无链接）'}\n**摘要**: {r.snippet or '（无摘要）'}\n"
+        # 对前 N 个结果抓取完整正文
+        if idx < fetch_top_n and r.url:
+            content = _fetch_webpage(r.url, max_content_chars) if _is_safe_target_url(r.url) else ""
+            if content:
+                entry += f"\n**正文（{len(content)}字）**:\n\n{content}\n"
+            else:
+                entry += "\n**正文**: 抓取失败\n"
+        parts.append(entry)
+
+    content_to_write = "\n".join(parts)
+
+    # 确保目录存在
+    dirpath = os.path.dirname(filepath)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+
+    # 追加写入
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(content_to_write)
+
+
 @tool
 def web_search(query: str, max_results: int = 5, topic: str = "general",
-               fetch_top_n: int = _FETCH_TOP_N, max_content_chars: int = _MAX_CONTENT_CHARS) -> str:
-    """搜索网络，返回标题+链接+摘要，并对前N个结果抓取完整正文（转Markdown）。
+               fetch_top_n: int = _FETCH_TOP_N, max_content_chars: int = _MAX_CONTENT_CHARS,
+               save_to: str = "", phase: str = "") -> str:
+    """搜索网络，返回标题+链接+摘要+关键信息，并可自动把完整结果（含全文正文）保存到文件。
 
     搜索源按 failover 顺序尝试:Tavily → Brave → Serper → DuckDuckGo。
     某个 provider 额度耗尽(HTTP 429/402)时自动冷却 1 小时并切换到下一个,
@@ -121,6 +182,10 @@ def web_search(query: str, max_results: int = 5, topic: str = "general",
         fetch_top_n: 对前N个结果抓取完整正文（转Markdown），默认2。
                      传0表示不抓正文（广度搜索阶段用），传3+用于深度搜索阶段。
         max_content_chars: 单篇正文截断字符数，默认4000。深度搜索阶段可提高到8000。
+        save_to: 若指定文件路径，完整搜索结果（含全文正文）将直接追加写入该文件（不经LLM压缩），
+                 返回给LLM的是精简版（标题+链接+摘要+关键信息提取）。
+                 用于研究素材收集——确保原始内容100%保留到文件供后续阶段读取。
+        phase: 搜索阶段标注（如"广度"/"深度"），写入文件时记录，便于追溯。
     """
     import asyncio
 
@@ -132,16 +197,32 @@ def web_search(query: str, max_results: int = 5, topic: str = "general",
         if not results:
             return "没有找到相关结果"
 
+        # 如果指定了 save_to，完整结果（含全文正文）直接追加写入文件
+        if save_to:
+            _append_research_to_file(
+                save_to, query, provider_name, results, topic,
+                fetch_top_n, max_content_chars, phase,
+            )
+
+        # 返回给 LLM 的是精简版（避免上下文爆炸）
+        # 如果有 save_to，正文部分只返回关键信息提取；如果没有 save_to，返回完整正文（向后兼容）
         parts = [f"[搜索来源: {provider_name}]"]
+        if save_to:
+            parts.append(f"[完整结果已保存到: {save_to}]")
         for idx, r in enumerate(results):
             # 基础条目：标题 + 链接 + 摘要
-            entry = f"[{r.title or '（无标题）'}]({r.url or '（无链接）'})\n{r.snippet or '（无摘要）'}"
+            entry = f"[{idx+1}] [{r.title or '（无标题）'}]({r.url or '（无链接）'})\n{r.snippet or '（无摘要）'}"
 
-            # 对前 N 个结果抓取正文，补充深度内容
             if idx < fetch_top_n and r.url:
                 content = _fetch_webpage(r.url, max_content_chars) if _is_safe_target_url(r.url) else ""
                 if content:
-                    entry += f"\n\n## 正文\n{content}"
+                    if save_to:
+                        # save_to 模式：只返回关键信息提取（完整正文已在文件里）
+                        key_info = _extract_key_info(content)
+                        entry += f"\n  正文关键信息（{len(content)}字，完整版见文件）:\n{key_info}"
+                    else:
+                        # 无 save_to：返回完整正文（向后兼容）
+                        entry += f"\n\n## 正文\n{content}"
 
             parts.append(entry)
 

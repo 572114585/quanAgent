@@ -430,6 +430,12 @@ async def _stream_agent(
         #   - content + 无 tool_call_chunks → delta（最终答案）
         seen_tool_message = False       # 是否已经见过 ToolMessage
         current_ai_has_tool_calls = False  # 当前 AIMessage 轮是否出现过 tool_call_chunks
+        # 跟踪上一个父图 AIMessage 的 id，用于检测轮次边界。
+        # langgraph stream_mode="messages" 下，同一 AIMessage 的流式 chunk 共享同一 id，
+        # 新轮次 AIMessage 的 id 不同。当 id 变化时重置 current_ai_has_tool_calls，
+        # 防御"工具异常/HITL 中断无 ToolMessage 导致标志卡住 True"的边角场景
+        # （标准 ReAct 下工具异常会生成 ToolMessage 正常重置，此处为防御性兜底）。
+        _last_ai_msg_id = None
 
         # 优先用 astream（真异步），没有就回退到在 thread 里跑 stream()
         # subgraphs=True：让子智能体（task() spawn 的子图）内部消息回流父 stream，
@@ -517,6 +523,17 @@ async def _stream_agent(
                 continue
 
             if isinstance(msg_chunk, AIMessageChunk):
+                # 轮次边界检测：基于 AIMessage id 检测新轮次。
+                # 同一 AIMessage 的流式 chunk 共享同一 id；新轮次 AIMessage 的 id 不同。
+                # 当 id 变化时重置 current_ai_has_tool_calls，防御工具异常/HITL 中断
+                # 无 ToolMessage 导致标志卡住 True、后续轮 content 误走 thinking_delta。
+                # 防御性：id 为空（某些模型/配置不设 id）时不触发重置，保守不误判。
+                _this_msg_id = getattr(msg_chunk, "id", None)
+                if _this_msg_id and _last_ai_msg_id is not None and _this_msg_id != _last_ai_msg_id:
+                    current_ai_has_tool_calls = False
+                if _this_msg_id:
+                    _last_ai_msg_id = _this_msg_id
+
                 content = msg_chunk.content
                 # 兼容 content 是 list（多模态片段）的情况
                 if isinstance(content, list):
@@ -1074,6 +1091,13 @@ async def chat_sessions():
 
     前端刷新后可从本端点恢复会话列表（而不仅依赖前端本地存储），
     解决 IndexedDB/Tauri Store 清空后历史会话丢失的问题。
+
+    updatedAt 排序修复：原实现给所有会话塞 int(time.time()*1000)，
+    导致前端 sort((a,b)=>b.updatedAt-a.updatedAt) 全部相等、顺序乱。
+    现在用 SQLite rowid（自增 = 写入顺序 = 真实活动顺序）反推时间戳：
+    - 一次 SQL 查每个 thread 的 MAX(rowid) / MIN(rowid)
+    - 按 MAX(rowid) 倒序遍历，最新的 thread 拿当前时间，往前递减 1 秒
+    这样既保留真实活动顺序，又是合法的递减时间戳，前端排序立即生效。
     """
     try:
         agent_obj = await get_agent()
@@ -1081,10 +1105,40 @@ async def chat_sessions():
         return JSONResponse(status_code=503, content={"message": str(e)})
 
     checkpointer = get_checkpointer()
-    thread_ids = await checkpointer.alist_threads()
 
+    # 一次性查每个 thread 的首次/末次 rowid（写入顺序代理时间戳）
+    # checkpoint_ns='' 限定根命名空间，避免子 agent 的 checkpoint 干扰
+    rowid_by_thread: dict[str, tuple[int, int]] = {}  # tid -> (first_rowid, last_rowid)
+    try:
+        with checkpointer._lock:
+            cur = checkpointer.conn.execute(
+                "SELECT thread_id, MIN(rowid), MAX(rowid) "
+                "FROM checkpoints WHERE checkpoint_ns = '' "
+                "GROUP BY thread_id"
+            )
+            for row in cur.fetchall():
+                rowid_by_thread[row[0]] = (row[1], row[2])
+    except Exception as e:
+        logger.warning("Failed to query thread rowids: %s", e)
+
+    # 按 last_rowid 倒序排列 thread，保证最新活动的 thread 排最前
+    sorted_tids = sorted(
+        rowid_by_thread.keys(),
+        key=lambda t: rowid_by_thread[t][1],
+        reverse=True,
+    )
+    # 后端未命中 rowid 的（理论上不存在，防御性兜底）补到末尾
+    all_tids = await checkpointer.alist_threads()
+    for tid in all_tids:
+        if tid not in rowid_by_thread:
+            sorted_tids.append(tid)
+
+    now_ms = int(time.time() * 1000)
     sessions_out = []
-    for tid in thread_ids:
+    for idx, tid in enumerate(sorted_tids):
+        # 跳过后端不存在的（防御）
+        if tid not in rowid_by_thread and tid not in all_tids:
+            continue
         try:
             config: dict = {"configurable": {"thread_id": tid}}
             state = await agent_obj.aget_state(config)
@@ -1099,17 +1153,28 @@ async def chat_sessions():
                         title = text[:30] + ("..." if len(text) > 30 else "")
                         break
 
+            # 用 rowid 顺序反推时间戳：最新 thread = now，往前每个递减 1 秒
+            # 保证 updatedAt 单调递减，前端 sort 立即正确
+            first_rowid, last_rowid = rowid_by_thread.get(tid, (0, 0))
+            rank = idx  # 倒序排名，0=最新
+            updated_ms = now_ms - rank * 1000
+            # createdAt：用 first_rowid 在所有 first_rowid 中的排名反推
+            # 简化：createdAt = updated_ms - (last_rowid - first_rowid) 的相对偏移
+            # 这里直接用 updated_ms 作为 createdAt 兜底（前端主要用 updatedAt 排序）
+            created_ms = updated_ms
+
             sessions_out.append({
                 "id": tid,
                 "title": title,
                 "messageCount": len(messages),
-                "createdAt": int(time.time() * 1000),
-                "updatedAt": int(time.time() * 1000),
+                "createdAt": created_ms,
+                "updatedAt": updated_ms,
             })
         except Exception as e:
             logger.warning("Failed to load thread %s: %s", tid, e)
             continue
 
+    # 已经按 rowid 倒序构造，但再 sort 一次保险（也兼容 rowid 缺失的兜底场景）
     sessions_out.sort(key=lambda s: s.get("updatedAt", 0), reverse=True)
     return {"sessions": sessions_out}
 

@@ -545,16 +545,17 @@ Review 输出：
 | 4 | md-to-pdf（HTML→PDF 渲染） | ✅ 已完成 | MVP 1 |
 | 5 | web-viz-libraries（图表/可视化库） | ✅ 已完成 | MVP 1 |
 | 6 | 产物检测与交付 | ✅ 已完成 | MVP 1 |
-| 7 | **检索深度调控**（质量/数量/长度参数化） | ❌ 待实现 | MVP 2 |
-| 8 | **大纲规划器**（按文档类型生成结构化大纲） | ❌ 待实现 | MVP 2 |
-| 9 | **逐节撰写子智能体**（全局进度感知） | ❌ 待实现 | MVP 2 |
-| 10 | **自动 Review**（对照需求+大纲） | ❌ 待实现 | MVP 2 |
-| 11 | **局部返工机制**（修改计划+执行） | ❌ 待实现 | MVP 2 |
-| 12 | **HTML 制作工作流**（每页 md→HTML） | ❌ 待实现 | MVP 2 |
-| 13 | **文档类型模板**（产品介绍/技术调研/新闻日报/数据分析） | ❌ 待实现 | MVP 2 |
-| 14 | Skill Registry（正式 Schema 声明） | ❌ 待实现 | MVP 3 |
-| 15 | Skill 独立服务化 | ❌ 待实现 | MVP 3 |
-| 16 | 多 Skill 微服务 + 异步队列 | ❌ 待实现 | MVP 4 |
+| 7 | **检索深度调控**（质量/数量/长度参数化） | ✅ 已完成（research-strategies skill） | MVP 2 |
+| 8 | **大纲规划器**（按文档类型生成结构化大纲） | ✅ 已完成（outline-planner skill） | MVP 2 |
+| 9 | **逐节撰写子智能体**（全局进度感知） | ✅ 已完成（section-writer skill + 子 agent） | MVP 2 |
+| 10 | **自动 Review**（对照需求+大纲） | ✅ 已完成（auto-review skill） | MVP 2 |
+| 11 | **局部返工机制**（修改计划+执行） | ✅ 已完成（auto-review skill Step2） | MVP 2 |
+| 12 | **HTML 制作工作流**（每页 md→HTML） | ✅ 已完成（md-to-pdf skill） | MVP 2 |
+| 13 | **文档类型模板**（产品介绍/技术调研/新闻日报/数据分析） | ✅ 已完成（outline-planner/references/doc-type-templates.md） | MVP 2 |
+| 14 | **端到端编排**（整合 5 个 Phase 的 document-builder skill） | ✅ 已完成（document-builder skill） | MVP 2 |
+| 15 | Skill Registry（正式 Schema 声明） | ❌ 待实现 | MVP 3 |
+| 16 | Skill 独立服务化 | ❌ 待实现 | MVP 3 |
+| 17 | 多 Skill 微服务 + 异步队列 | ❌ 待实现 | MVP 4 |
 
 ### MVP 1：单 Orchestrator + 本地 Skills（已完成）
 
@@ -573,9 +574,9 @@ Agent Core
 
 已验证：协议、流程、SSE 流式、HITL、产物交付。
 
-### MVP 2：文档生成核心工作流（下一阶段目标）
+### MVP 2：文档生成核心工作流（已完成）
 
-**这是当前要攻克的阶段。** 目标是让 Agent 能完成"信息整合 → PDF 输出"的完整闭环。
+**已完成阶段。** 目标是让 Agent 能完成"信息整合 → PDF 输出"的完整闭环。已通过 document-builder skill 整合 5 个 Phase 实现端到端编排。
 
 ```text
 Agent Core
@@ -591,36 +592,36 @@ Agent Core
 MVP 2 的拆解（按依赖顺序）：
 
 ```text
-Phase 2.1：检索深度调控
+Phase 2.1：检索深度调控 ✅ 已完成（research-strategies skill）
   - 扩展 web_search / kb_search 支持质量/数量/长度参数
   - 新增"检索策略"逻辑：按文档类型选择检索深度
   - 检索结果结构化存储（供后续大纲规划使用）
 
-Phase 2.2：大纲规划器
+Phase 2.2：大纲规划器 ✅ 已完成（outline-planner skill）
   - 定义文档类型模板（产品介绍/技术调研/新闻日报/数据分析）
   - 根据检索结果 + 文档类型生成结构化大纲
   - 大纲含每节标题、摘要、预计字数、所需数据点
   - HITL 确认大纲
 
-Phase 2.3：逐节撰写子智能体
+Phase 2.3：逐节撰写子智能体 ✅ 已完成（section-writer skill + 子 agent）
   - 新增 section_writer subagent
   - 上下文注入：完整大纲 + 已完成节摘要 + 当前节位置 + 待写节标题
   - 支持顺序模式和并行模式
   - 逐节输出 md 内容，写入中间文件
 
-Phase 2.4：自动 Review + 局部返工
+Phase 2.4：自动 Review + 局部返工 ✅ 已完成（auto-review skill）
   - 新增 auto_review 逻辑：对照需求+大纲，检查 5 个维度
-  - 生成修改计划（标注位置+建议，按严重程度排序）
+  - 生成修改计划（标注位置+建议，按严重程度排序 P0-P5）
   - 局部修改执行（只改问题节，不重写全文）
   - 修改后重新 Review 受影响节段
 
-Phase 2.5：HTML 制作工作流
+Phase 2.5：HTML 制作工作流 ✅ 已完成（md-to-pdf skill）
   - 每页内容(md) → 呈现方式描述(md) → HTML 制作
   - 复用 md-to-pdf 的模板体系 + web-viz-libraries 的可视化能力
   - HTML 审查 → 返工 → 完成
   - HTML → PDF（render_pdf.py）
 
-Phase 2.6：端到端集成
+Phase 2.6：端到端集成 ✅ 已完成（document-builder skill）
   - document-builder Skill 整合上述 5 个 Phase
   - 完整工作流：检索 → 大纲 → 逐节撰写 → Review → 返工 → HTML → PDF
   - HITL 检查点：大纲确认、终稿确认
@@ -788,9 +789,10 @@ Skill 服务：
 当前建议采用：
 
 ```text
-短期（MVP 2）：
+短期（MVP 2）✅ 已完成：
   单体 Orchestrator + Document Builder Skill（本地模块化）
-  重点攻克：检索深度调控 → 大纲规划 → 逐节撰写 → 自动Review → 返工 → HTML → PDF
+  已实现：检索深度调控 → 大纲规划 → 逐节撰写 → 自动Review → 返工 → HTML → PDF
+  5 个 Phase 通过 document-builder skill 整合为端到端编排
 
 中期（MVP 3）：
   Skill Registry + Document Builder 独立服务

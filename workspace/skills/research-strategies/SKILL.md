@@ -16,7 +16,7 @@ allowed-tools: read_file
 |---|---|---|---|---|
 | brief（简报） | 用户说"简报""概览""快速了解" 或 文档类型为新闻日报 | 快、浅、覆盖面够即可 | max_results=3, fetch_top_n=0 | fetch_top_n=1, max_content_chars=2000 |
 | standard（标准） | 默认，用户未明确说明 | 适中深度 + 适中覆盖 | max_results=5, fetch_top_n=0 | fetch_top_n=2, max_content_chars=4000 |
-| in-depth（深度） | 用户说"详细""深入""全面""深度调研" 或 文档类型为技术调研/数据分析 | 慢、深、多源交叉验证 | max_results=8, fetch_top_n=0 | fetch_top_n=4, max_content_chars=8000 |
+| in-depth（深度） | 用户说"详细""深入""全面""深度调研" 或 文档类型为技术调研/数据分析 | 慢、深、多源交叉验证 | max_results=8, fetch_top_n=0 | fetch_top_n=4, max_content_chars=200000 |
 
 > **深度判断规则**：
 > 1. 用户显式说明（"详细的""简报"）→ 按说明走
