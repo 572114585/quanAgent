@@ -328,6 +328,18 @@ figcaption { font-size: 9px; color: #555; margin-top: 6px; text-align: center; }
 
 > **复杂公式(矩阵/多重积分)处理**:HTML 实体手工排版吃力。遇到矩阵用 HTML `<table>` 拼,多重积分用 `&int;&int;` 叠加。若实在排不了,退化为代码块 `<pre>` 放 LaTeX 原文 + 注释说明。
 
+#### 表格处理(关键:防溢出)
+
+**问题**:列多或内容长的表格在双栏布局中会溢出版心。
+
+**规则**:
+- 所有表格必须加 `table-layout: fixed` + `th, td { word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; }`
+- 列数 ≤5 的表格放在双栏内,用 `<div class="no-break">` 防跨页
+- 列数 >5 的宽表格用 `.table-full-width`(`column-span: all`)跨双栏显示
+- 内容特别长的表格加 `.compact` 类缩小字号(8px → 7px)
+- 长表跨页时加 `thead { display: table-header-group }` 让每页重复表头
+- 参考 component-catalog.md 的 T4 自适应防溢出表格组件
+
 #### HTML 骨架示例(伪代码)
 
 ```html

@@ -269,6 +269,7 @@ code {
 /* ---------- Tables (three-line / booktabs style) ---------- */
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   margin: 1em 0;
   font-size: 9px;
@@ -280,12 +281,18 @@ th {
   text-align: center;
   border-bottom: 2px solid #000;
   border-top: 2px solid #000;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 td {
   padding: 5px 8px;
   text-align: center;
   border-bottom: 1px solid #CCC;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 tr:last-child td {
@@ -295,6 +302,11 @@ tr:last-child td {
 tr td:first-child,
 tr th:first-child {
   text-align: left;
+}
+
+table.full-width {
+  column-span: all;
+  -webkit-column-span: all;
 }
 
 .caption-above {
