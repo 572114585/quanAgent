@@ -1,7 +1,7 @@
 ---
 name: section-writer
 description: "文档逐节撰写方法论。section-writer 子 agent 撰写单节内容时参考。定义内容撰写规范、呈现方式占位符格式、引用标注规则、全局连贯性要求。"
-allowed-tools: read_file write_file
+allowed-tools: read_file inspect_file replace_file
 ---
 
 # Section Writer 逐节撰写方法论
@@ -14,8 +14,9 @@ allowed-tools: read_file write_file
 1. 解析 description 中的信息（大纲/当前节/素材路径/全局约定）
 2. read_file 检索素材，提取当前节所需信息
 3. 按呈现方式撰写 md 内容（含占位符）
-4. write_file 写入 /tmp/sections/<section_n>.md
-5. 返回摘要 + 文件路径
+4. replace_file 写入 /tmp/sections/<section_n>.md（允许返工时安全覆盖）
+5. inspect_file 检查实际字符数，未达到预计字数 70% 则继续扩写
+6. 返回摘要 + 文件路径
 ```
 
 ## B. 呈现方式占位符格式
@@ -78,8 +79,8 @@ AI Agent 的核心技术架构基于"感知-规划-执行-学习"循环 [2]。�
 
 ## E. 内容质量要求
 
-1. **有据可查**：内容必须有来源支撑，不编造数据
+1. **有据可查**：内容必须有来源支撑，不编造数据；写前必须 `read_file` 对应 `/tmp/research/*.md`（含 `## 抓取记录` 全文），不足则标 `[此处需要补充: xxx]` 并在返回摘要中声明缺料
 2. **诚实标注**：缺数据用 `[此处需要补充: xxx]` 占位
-3. **字数灵活**：预计字数是大致参考，内容质量优先于字数
+3. **字数硬门**：实际字数须 ≥ 大纲预计字数的 **70%**，否则本节不算完成，须扩写后再交
 4. **数据标注**：数据要标注年份和来源
 5. **区分性质**：区分事实、推断和预测（预测需标注"预测"字样）

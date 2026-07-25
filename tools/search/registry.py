@@ -1,13 +1,13 @@
-"""搜索 Provider 注册中心与 failover 编排。
+"""搜索 Provider 注册中心：failover 与 multi-provider fusion。
 
-链路顺序固定:Tavily → Brave → Serper → DuckDuckGo
-- 某第三方 provider 抛 QuotaExceededError → 标记冷却 1 小时,立即尝试下一个
-- 某第三方 provider 抛其他异常 → 不冷却,跳过本次尝试
-- 所有第三方都不可用 → 使用 DuckDuckGo 兜底
-- DuckDuckGo 也失败 → 抛 RuntimeError
+默认 mode=fusion：
+  - 并行查询所有可用第三方 provider（+ 可选 DDG）
+  - canonical URL 去重 + 域名多样性 + 权威/时效加权
+  - 返回融合 Top-K
 
-provider 列表在首次调用时懒加载(读 env),用 asyncio.Lock 保护初始化。
-运行时只读 _providers,冷却状态由各 provider 内部维护(线程安全由 GIL 保证)。
+mode=failover（兼容旧行为）：
+  - Tavily → Brave → Serper → DuckDuckGo 首个非空即返回
+  - QuotaExceededError → 冷却 1 小时
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from .tavily import TavilyProvider
 from .brave import BraveProvider
 from .serper import SerperProvider
 from .duckduckgo import DuckDuckGoProvider
+from .fuse import fuse_search_results
 
 logger = logging.getLogger(__name__)
 
@@ -37,96 +38,163 @@ async def _get_providers() -> list[BaseSearchProvider]:
         if _providers is not None:
             return _providers
 
-        # 延迟导入,避免循环依赖
         from agent_core.config import (
             TAVILY_API_KEY,
             BRAVE_API_KEY,
             SERPER_API_KEY,
-            SEARCH_PROVIDER_COOLDOWN_SECONDS,
         )
 
         providers: list[BaseSearchProvider] = []
-        # 按固定 failover 顺序构造;无 key 的第三方 provider 直接跳过(不入链路)
         if TAVILY_API_KEY:
             providers.append(TavilyProvider(TAVILY_API_KEY))
         if BRAVE_API_KEY:
             providers.append(BraveProvider(BRAVE_API_KEY))
         if SERPER_API_KEY:
             providers.append(SerperProvider(SERPER_API_KEY))
-        # DuckDuckGo 永远在末尾作兜底
         providers.append(DuckDuckGoProvider())
 
         _providers = providers
         logger.info(
-            "Search providers initialized (failover order): %s",
+            "Search providers initialized (order): %s",
             [p.name for p in providers],
         )
         return _providers
 
 
-async def get_search_results(query: SearchQuery) -> tuple[list[SearchResult], str]:
-    """按 failover 顺序尝试各 provider,返回 (结果, 使用的 provider 名)。
+async def _search_one(
+    provider: BaseSearchProvider,
+    query: SearchQuery,
+    cooldown_seconds: int,
+) -> tuple[str, list[SearchResult] | None, Exception | None]:
+    """调用单个 provider，返回 (name, results|None, error|None)。"""
+    if not provider.is_available():
+        return provider.name, None, None
+    try:
+        results = await provider.search(query)
+        for i, r in enumerate(results):
+            r.provider = provider.name
+            r.provider_rank = i
+            r.ensure_derived()
+        return provider.name, results or [], None
+    except QuotaExceededError as e:
+        provider.mark_cooldown(cooldown_seconds)
+        logger.warning(
+            "Provider %s quota exceeded, cooling down %ss: %s",
+            provider.name,
+            cooldown_seconds,
+            e,
+        )
+        return provider.name, None, e
+    except Exception as e:
+        logger.warning(
+            "Provider %s failed (transient, no cooldown): %s: %s",
+            provider.name,
+            type(e).__name__,
+            e,
+        )
+        return provider.name, None, e
 
-    逻辑:
-      1. 按顺序遍历 provider,跳过不可用的(is_available() False)
-      2. 调用 search(),成功且非空则返回
-      3. QuotaExceededError → 冷却 + 跳过
-      4. 其他 Exception → 跳过(不冷却)
-      5. 全部失败 → 最后兜底用 DuckDuckGo(若链路里没有则新建)
-      6. DuckDuckGo 也失败 → 抛 RuntimeError
-    """
+
+async def _get_search_results_failover(
+    query: SearchQuery,
+) -> tuple[list[SearchResult], str]:
+    """旧链路：首个非空 provider 即返回。"""
     from agent_core.config import SEARCH_PROVIDER_COOLDOWN_SECONDS
 
     providers = await _get_providers()
-
     last_error: Optional[Exception] = None
     ddg_used_in_chain = False
 
     for provider in providers:
         if provider.name == "duckduckgo":
             ddg_used_in_chain = True
-
-        if not provider.is_available():
-            logger.debug("Provider %s skipped (not available)", provider.name)
+        name, results, err = await _search_one(
+            provider, query, SEARCH_PROVIDER_COOLDOWN_SECONDS
+        )
+        if err is not None:
+            last_error = err
             continue
+        if results is None:
+            continue
+        if results:
+            logger.info("Search succeeded via provider (failover): %s", name)
+            return results, name
+        logger.debug("Provider %s returned empty results", name)
 
-        try:
-            results = await provider.search(query)
-            if results:
-                logger.info("Search succeeded via provider: %s", provider.name)
-                return results, provider.name
-            logger.debug("Provider %s returned empty results", provider.name)
-        except QuotaExceededError as e:
-            provider.mark_cooldown(SEARCH_PROVIDER_COOLDOWN_SECONDS)
-            logger.warning(
-                "Provider %s quota exceeded, cooling down %ss: %s",
-                provider.name,
-                SEARCH_PROVIDER_COOLDOWN_SECONDS,
-                e,
-            )
-            last_error = e
-        except Exception as e:
-            # 网络抖动等临时故障:不冷却,仅跳过本次
-            logger.warning(
-                "Provider %s failed (transient, no cooldown): %s: %s",
-                provider.name,
-                type(e).__name__,
-                e,
-            )
-            last_error = e
-
-    # 链路里所有 provider 都失败(包括 DDG 自己失败的情况)
-    # 如果 DDG 没在链路里(理论上不会,因为构造时一定追加),补一次
     if not ddg_used_in_chain:
         try:
             ddg = DuckDuckGoProvider()
             results = await ddg.search(query)
             if results:
+                for i, r in enumerate(results):
+                    r.provider = ddg.name
+                    r.provider_rank = i
+                    r.ensure_derived()
                 return results, ddg.name
         except Exception as e:
             last_error = e
 
     raise RuntimeError(f"所有搜索 provider 均不可用,最后错误: {last_error}")
+
+
+async def _get_search_results_fusion(
+    query: SearchQuery,
+) -> tuple[list[SearchResult], str]:
+    """并行多源融合。"""
+    from agent_core.config import SEARCH_PROVIDER_COOLDOWN_SECONDS
+
+    providers = await _get_providers()
+    # 并行：所有已配置且可用的 provider（含 DDG）
+    tasks = [
+        _search_one(p, query, SEARCH_PROVIDER_COOLDOWN_SECONDS)
+        for p in providers
+        if p.is_available()
+    ]
+    if not tasks:
+        # 全部冷却：仍强制试 DDG
+        ddg = DuckDuckGoProvider()
+        tasks = [_search_one(ddg, query, SEARCH_PROVIDER_COOLDOWN_SECONDS)]
+
+    outcomes = await asyncio.gather(*tasks)
+    batches: list[tuple[str, list[SearchResult]]] = []
+    last_error: Optional[Exception] = None
+    used_names: list[str] = []
+
+    for name, results, err in outcomes:
+        if err is not None:
+            last_error = err
+        if results:
+            batches.append((name, results))
+            used_names.append(name)
+
+    if not batches:
+        raise RuntimeError(f"所有搜索 provider 均不可用,最后错误: {last_error}")
+
+    prefer_news = (query.topic or "").lower() == "news"
+    fused = fuse_search_results(
+        batches,
+        max_results=max(1, query.max_results),
+        max_per_domain=2,
+        prefer_news=prefer_news,
+    )
+    if not fused:
+        raise RuntimeError("融合后无有效搜索结果")
+
+    provider_label = "+".join(used_names) if used_names else "fusion"
+    logger.info(
+        "Search fusion ok via [%s] → %s results",
+        provider_label,
+        len(fused),
+    )
+    return fused, provider_label
+
+
+async def get_search_results(query: SearchQuery) -> tuple[list[SearchResult], str]:
+    """按 query.mode 选择 fusion 或 failover，返回 (结果, provider 标签)。"""
+    mode = (query.mode or "fusion").strip().lower()
+    if mode == "failover":
+        return await _get_search_results_failover(query)
+    return await _get_search_results_fusion(query)
 
 
 def reset_providers() -> None:

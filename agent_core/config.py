@@ -23,12 +23,48 @@ UPLOADS_DIR = WORKSPACE_ROOT / "uploads"
 # 与 output/tmp/uploads 同级，随 workspace 卷一起持久化，进程重启后 thread 状态可恢复。
 STATE_DIR = WORKSPACE_ROOT / "state"
 CHECKPOINT_DB_PATH = STATE_DIR / "checkpoints.sqlite"
+# 流式事件 append-only 日志（SSE 断线补流）
+EVENT_LOG_DB_PATH = STATE_DIR / "events.sqlite"
+
+# 运行预算：LangGraph recursion_limit 与单次 run 墙钟超时
+AGENT_RECURSION_LIMIT = int(os.getenv("AGENT_RECURSION_LIMIT", "100"))
+AGENT_RUN_DEADLINE_SECONDS = float(os.getenv("AGENT_RUN_DEADLINE_SECONDS", "1800"))
 
 # 运行时开关（原 run.py L93/96 的 HITL_ENABLED / MAX_UPLOAD_SIZE）
 HITL_ENABLED_DEFAULT = os.getenv("HITL_ENABLED", "true").lower() in ("1", "true", "yes")
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024)))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# Agent 模式与权限（详见 agent_core.permissions / execute_policy）
+# AGENT_MODE=agent|plan ；PERMISSION_EXECUTE / PERMISSION_WRITE = allow|ask|deny
+# EXECUTE_PROFILE=workspace_auto|manual
+#   workspace_auto（默认）：只读/构建自动执行；解释器内联/联网/安装需确认
+#   manual：每条 execute 都 ask（旧行为）
+# 默认：WRITE=allow，EXECUTE 按命令分类（工具级仍为 ask + when 谓词）
+AGENT_MODE_DEFAULT = os.getenv("AGENT_MODE", "agent").strip().lower()
+if AGENT_MODE_DEFAULT not in ("agent", "plan"):
+    AGENT_MODE_DEFAULT = "agent"
+EXECUTE_PROFILE_DEFAULT = os.getenv("EXECUTE_PROFILE", "workspace_auto").strip().lower()
+if EXECUTE_PROFILE_DEFAULT not in ("workspace_auto", "manual", "ask_all", "legacy"):
+    EXECUTE_PROFILE_DEFAULT = "workspace_auto"
+CHANNEL_DENY_EXECUTE = os.getenv("CHANNEL_DENY_EXECUTE", "true").lower() in (
+    "1", "true", "yes",
+)
+# 可选脚本 hooks 目录（相对 WORKSPACE_ROOT 或绝对路径）
+HOOKS_DIR = Path(os.getenv("HOOKS_DIR", str(WORKSPACE_ROOT / "hooks")))
+
+# ===== Web 控制面 =====
+# Bearer Token；未设置时仅建议在回环地址无鉴权使用
+AGENT_API_TOKEN: str = os.getenv("AGENT_API_TOKEN", "").strip()
+# CORS 允许来源（逗号分隔）
+_DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+ALLOWED_ORIGINS: list[str] = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
+    if o.strip()
+]
+# 监听地址；默认仅本机
+WEB_HOST_DEFAULT = "127.0.0.1"
 # ===== 搜索 Provider 配置 =====
 # 三个第三方搜索 API 的 key,留空则该 provider 不启用(直接跳过,不入 failover 链路)。
 # 链路顺序:Tavily → Brave → Serper → DuckDuckGo(兜底)

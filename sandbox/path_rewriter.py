@@ -108,7 +108,7 @@ def _tokens_after_env_assignments(tokens: list[str]) -> list[str]:
 
 
 def _extract_command_head(segment: str) -> str | None:
-    """提取段命令的 head（剥环境赋值 + 取 basename，兼容 python3.11 这类）。"""
+    """提取段命令的 head（剥环境赋值 + 取 basename，兼容 python3.11 / .exe）。"""
     tokens = _split_segment_tokens(segment)
     tokens = _tokens_after_env_assignments(tokens)
     while tokens:
@@ -116,7 +116,13 @@ def _extract_command_head(segment: str) -> str | None:
         if "=" in head and head.split("=", 1)[0].isidentifier():
             tokens = tokens[1:]
             continue
-        return head.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        base = head.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        low = base.lower()
+        for suffix in (".exe", ".cmd", ".bat", ".ps1", ".com"):
+            if low.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        return base
     return None
 
 

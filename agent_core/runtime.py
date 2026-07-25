@@ -5,9 +5,9 @@
 
 消除原先三套 agent 配置分歧（agent_runtime 单例 / run.py build_agent / demo.py 自建）：
 所有入口（entrypoints/web、entrypoints/cli、channels/*）必须经 build_agent() 构造。
-- channels 用模块级 `agent` 单例（build_agent(hitl=False)，无 HITL，与原行为一致）
-- entrypoints/web 用 build_agent(hitl=HITL_ENABLED_DEFAULT)
-- entrypoints/cli 用 build_agent(hitl=True)（交互式终端需 HITL 确认 execute）
+- channels 用模块级 `agent` 单例（entrypoint=channel，写/execute deny）
+- entrypoints/web 用 build_agent(entrypoint=web, hitl=HITL_ENABLED_DEFAULT)
+- entrypoints/cli 用 build_agent(entrypoint=cli, hitl=True)
 """
 from __future__ import annotations
 
@@ -15,15 +15,32 @@ import asyncio
 import sqlite3
 import threading
 import uuid
+from typing import Any, Sequence
 
 from deepagents import create_deep_agent
+from deepagents.middleware.subagents import (
+    DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
+    DEFAULT_SUBAGENT_PROMPT,
+)
+from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from agent_core.config import CHECKPOINT_DB_PATH, ensure_runtime_dirs
+from agent_core.config import CHECKPOINT_DB_PATH, HOOKS_DIR, ensure_runtime_dirs
 from agent_core.llm import create_llm
-from agent_core.prompts import SYSTEM_PROMPT, research_subagent, section_writer
+from agent_core.middleware import CompactReseedMiddleware, TodoGateMiddleware
+from agent_core.permissions import AgentMode, Entrypoint, build_interrupt_on, default_mode
+from agent_core.prompts import research_subagent, section_writer, system_prompt_for
+from hooks import build_hooks_middleware
 from sandbox import backend
-from tools import get_current_time, render_html
+from tools import (
+    ask_user_question,
+    check_research_material,
+    get_current_time,
+    inspect_file,
+    render_html,
+    replace_file,
+    view_image,
+)
 
 
 class DualSqliteSaver(SqliteSaver):
@@ -47,11 +64,9 @@ class DualSqliteSaver(SqliteSaver):
     def __init__(self, conn: sqlite3.Connection):
         super().__init__(conn)
         self._lock = threading.Lock()
-        # WAL 提升读写并发；busy_timeout 在锁竞争时等待而非立即报错。
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
 
-    # ---- sync 接口加锁（cli 的 stream / get_state 路径）----
     def put(self, *args, **kwargs):
         with self._lock:
             return super().put(*args, **kwargs)
@@ -73,7 +88,6 @@ class DualSqliteSaver(SqliteSaver):
             cur = self.conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
             return [row[0] for row in cur.fetchall()]
 
-    # ---- async 接口：to_thread 包 sync（web 的 astream / channel 的 astream_events）----
     async def aput(self, config, checkpoint, metadata, new_versions):
         return await asyncio.to_thread(
             self.put, config, checkpoint, metadata, new_versions
@@ -94,53 +108,122 @@ class DualSqliteSaver(SqliteSaver):
         return await asyncio.to_thread(self.list_threads)
 
 
-# 模块级单例 checkpointer：所有 build_agent() 共用，避免多实例指向同一 SQLite 文件
-# 引发单写者并发问题。check_same_thread=False：web 的 uvicorn 多协程 + to_thread
-# 会在不同线程访问同一连接，必须放宽 sqlite3 的线程限制（_lock 保证串行）。
 _checkpointer: DualSqliteSaver | None = None
 
 
 def get_checkpointer() -> DualSqliteSaver:
-    """惰性创建模块级 DualSqliteSaver 单例并建表。
-
-    setup() 同步建 checkpoints / writes 两张表。单例保证 web/cli/channel 三处
-    build 共用同一 DB 文件、同一连接。
-    """
+    """惰性创建模块级 DualSqliteSaver 单例并建表。"""
     global _checkpointer
     if _checkpointer is None:
         conn = sqlite3.connect(str(CHECKPOINT_DB_PATH), check_same_thread=False)
         saver = DualSqliteSaver(conn)
-        saver.setup()  # 同步建表（checkpoints / writes）
+        saver.setup()
         _checkpointer = saver
     return _checkpointer
 
 
-def build_agent(*, hitl: bool = False):
-    """统一 agent 装配入口。所有入口（web/cli/channel）必须经此构造。
+def _subagent_with_hooks(
+    spec: dict[str, Any],
+    hooks_mw: AgentMiddleware,
+    *,
+    interrupt_on: dict[str, bool | dict] | None,
+) -> dict[str, Any]:
+    """克隆子 agent 规格并注入 HooksMiddleware。
 
-    Args:
-        hitl: 是否启用 Human-In-The-Loop 中断。启用时 execute 工具调用前会暂停
-              等待用户批准/拒绝（终端 CLI 场景）。web/channel 默认关闭——
-              web 的 HITL 通过 interrupt_on + /chat/resume 实现，但当前默认关闭
-              （execute 受 _ShellWhitelistFilter 白名单保护，足够安全）；
-              channel 无 stdin，启用 HITL 会卡死。
+    deepagents 会把顶层 interrupt_on 继承给子图，但不会继承主图的 user
+    middleware。若不注入 Hooks，子图内 execute 批准后 trust 仍为 strict，
+    软白名单会再次拒绝（日志中的 task 并行 + wc/grep/python -c 即此问题）。
     """
+    out = {**spec}
+    existing = list(spec.get("middleware") or [])
+    out["middleware"] = [hooks_mw, *existing]
+    if interrupt_on is not None and "interrupt_on" not in spec:
+        out["interrupt_on"] = interrupt_on
+    return out
+
+
+def build_agent(
+    *,
+    hitl: bool | None = None,
+    mode: AgentMode | None = None,
+    entrypoint: Entrypoint = "web",
+    always_approve: bool = False,
+    middleware: Sequence[AgentMiddleware] | None = None,
+):
+    """统一 agent 装配入口。所有入口（web/cli/channel）必须经此构造。"""
     ensure_runtime_dirs()
-    interrupt_on = {"execute": True} if hitl else None
+    resolved_mode: AgentMode = mode or default_mode()
+    if hitl is None:
+        hitl = entrypoint != "channel"
+
+    interrupt_on = build_interrupt_on(
+        mode=resolved_mode,
+        entrypoint=entrypoint,
+        hitl_enabled=bool(hitl),
+        always_approve=always_approve,
+    )
+
+    hooks_mw = build_hooks_middleware(
+        mode=resolved_mode,
+        entrypoint=entrypoint,
+        hitl_enabled=bool(hitl),
+        always_approve=always_approve,
+        interrupt_on=interrupt_on,
+        hooks_dir=HOOKS_DIR,
+    )
+    user_middleware: list[AgentMiddleware] = [
+        hooks_mw,
+        TodoGateMiddleware(),
+        CompactReseedMiddleware(),
+    ]
+    if middleware:
+        user_middleware.extend(middleware)
+
+    subagents = [
+        _subagent_with_hooks(research_subagent, hooks_mw, interrupt_on=interrupt_on),
+        _subagent_with_hooks(section_writer, hooks_mw, interrupt_on=interrupt_on),
+        # 显式 general-purpose，覆盖框架默认（默认无 Hooks → trust 断链）
+        _subagent_with_hooks(
+            {
+                "name": "general-purpose",
+                "description": DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
+                "system_prompt": DEFAULT_SUBAGENT_PROMPT,
+                "tools": [
+                    get_current_time,
+                    ask_user_question,
+                    inspect_file,
+                    replace_file,
+                    check_research_material,
+                ],
+            },
+            hooks_mw,
+            interrupt_on=interrupt_on,
+        ),
+    ]
+
     return create_deep_agent(
         model=create_llm(),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt_for(resolved_mode),
         backend=backend,
-        tools=[get_current_time, render_html],
-        subagents=[research_subagent, section_writer],
+        tools=[
+            get_current_time,
+            render_html,
+            view_image,
+            ask_user_question,
+            inspect_file,
+            replace_file,
+            check_research_material,
+        ],
+        subagents=subagents,
         interrupt_on=interrupt_on,
         checkpointer=get_checkpointer(),
         skills=["skills/"],
+        middleware=user_middleware,
     )
 
 
-# 模块级单例：供 channels 直接 import（无 HITL，与原 agent_runtime.agent 行为一致）
-agent = build_agent(hitl=False)
+# 模块级单例：供 channels 直接 import（写/execute deny，无 HITL）
+agent = build_agent(hitl=False, entrypoint="channel", mode="agent")
 
 
 def new_thread_id(prefix: str = "thread") -> str:

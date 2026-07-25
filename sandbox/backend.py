@@ -14,8 +14,13 @@ SKILL.md 里写的 /skills/... 在 execute 下会被 shell 当成系统绝对路
 output/ 子树，skills/ 子树完全只读（防模型自写脚本污染 skill 目录）。
 """
 import asyncio
+from collections import deque
+from datetime import datetime
 import logging
+import os
 import subprocess
+import tempfile
+from typing import Any
 
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import (
@@ -34,6 +39,13 @@ from sandbox.path_rewriter import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MAX_INSPECT_BYTES = 20 * 1024 * 1024
+_MAX_INSPECT_TAIL_LINES = 200
+_MAX_INSPECT_TAIL_CHARS = 50_000
+_MAX_INSPECT_LITERALS = 20
+_MAX_INSPECT_LITERAL_CHARS = 200
+_MAX_REPLACE_BYTES = 20 * 1024 * 1024
 
 
 class _SkillsShellBackend(LocalShellBackend):
@@ -115,6 +127,211 @@ class _SkillsShellBackend(LocalShellBackend):
 
     async def aupload_files(self, files):  # type: ignore[override]
         return self.upload_files(files)
+
+    # -------------------------- 安全文件辅助能力 --------------------------
+    def inspect_file(
+        self,
+        file_path: str,
+        *,
+        tail_lines: int = 0,
+        count_literals: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """统计工作区文本文件，并可返回末尾行和字面量出现次数。
+
+        该能力不经过 shell；路径仍使用 LocalShellBackend 的 virtual_mode 解析，
+        因而 `/tmp/a.md` 会映射到工作区，且 `..`/符号链接逃逸会被拒绝。
+        """
+        if not isinstance(tail_lines, int) or not 0 <= tail_lines <= _MAX_INSPECT_TAIL_LINES:
+            return {
+                "ok": False,
+                "path": file_path,
+                "error": f"tail_lines 必须在 0..{_MAX_INSPECT_TAIL_LINES} 之间。",
+            }
+
+        raw_literals = count_literals or []
+        if not isinstance(raw_literals, list) or len(raw_literals) > _MAX_INSPECT_LITERALS:
+            return {
+                "ok": False,
+                "path": file_path,
+                "error": f"count_literals 最多 {_MAX_INSPECT_LITERALS} 项。",
+            }
+
+        literals: list[str] = []
+        for literal in raw_literals:
+            if not isinstance(literal, str) or not literal:
+                return {
+                    "ok": False,
+                    "path": file_path,
+                    "error": "count_literals 只能包含非空字符串。",
+                }
+            if len(literal) > _MAX_INSPECT_LITERAL_CHARS or "\n" in literal or "\r" in literal:
+                return {
+                    "ok": False,
+                    "path": file_path,
+                    "error": (
+                        "count_literals 中的每项必须是单行字符串，且长度不超过 "
+                        f"{_MAX_INSPECT_LITERAL_CHARS}。"
+                    ),
+                }
+            if literal not in literals:
+                literals.append(literal)
+
+        try:
+            resolved = self._resolve_path(file_path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "ok": False,
+                "path": file_path,
+                "error": f"无法解析文件路径：{exc}",
+            }
+
+        try:
+            if not resolved.exists() or not resolved.is_file():
+                return {
+                    "ok": False,
+                    "path": file_path,
+                    "error": "文件不存在或不是普通文件。",
+                }
+
+            stat = resolved.stat()
+            result: dict[str, Any] = {
+                "ok": True,
+                "path": file_path,
+                "size_bytes": int(stat.st_size),
+                "modified_at": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(),
+            }
+            if stat.st_size > _MAX_INSPECT_BYTES:
+                result.update(
+                    {
+                        "ok": False,
+                        "error": (
+                            f"文件超过安全扫描上限 {_MAX_INSPECT_BYTES} 字节；"
+                            "仅返回元数据，请用 read_file 分页读取。"
+                        ),
+                    }
+                )
+                return result
+
+            tail: deque[str] = deque(maxlen=tail_lines or None)
+            line_count = 0
+            char_count = 0
+            replacement_count = 0
+            literal_counts = dict.fromkeys(literals, 0)
+
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(resolved, flags)
+            with os.fdopen(
+                fd,
+                "r",
+                encoding="utf-8",
+                errors="replace",
+                newline="",
+            ) as handle:
+                for line in handle:
+                    if "\x00" in line:
+                        return {
+                            **result,
+                            "ok": False,
+                            "error": "文件包含 NUL 字节，疑似二进制；请使用专用文件工具。",
+                        }
+                    line_count += 1
+                    char_count += len(line)
+                    replacement_count += line.count("\ufffd")
+                    for literal in literals:
+                        literal_counts[literal] += line.count(literal)
+                    if tail_lines:
+                        tail.append(line.rstrip("\r\n"))
+
+            result.update(
+                {
+                    "line_count": line_count,
+                    "char_count": char_count,
+                    "encoding": "utf-8",
+                    "decode_replacement_count": replacement_count,
+                    "literal_counts": literal_counts,
+                }
+            )
+            if tail_lines:
+                tail_text = "\n".join(tail)
+                if len(tail_text) > _MAX_INSPECT_TAIL_CHARS:
+                    tail_text = tail_text[-_MAX_INSPECT_TAIL_CHARS:]
+                    result["tail_truncated"] = True
+                else:
+                    result["tail_truncated"] = False
+                result["tail"] = tail_text
+                result["tail_line_count"] = len(tail)
+            return result
+        except (OSError, RuntimeError) as exc:
+            return {
+                "ok": False,
+                "path": file_path,
+                "error": f"检查文件失败：{exc}",
+            }
+
+    def replace_file(self, file_path: str, content: str) -> WriteResult:
+        """在 tmp/output 内原子创建或覆盖 UTF-8 文本文件。"""
+        if not isinstance(content, str):
+            return WriteResult(error="replace_file 的 content 必须是字符串。")
+        encoded_size = len(content.encode("utf-8"))
+        if encoded_size > _MAX_REPLACE_BYTES:
+            return WriteResult(
+                error=(
+                    f"replace_file 内容为 {encoded_size} 字节，"
+                    f"超过上限 {_MAX_REPLACE_BYTES} 字节。"
+                )
+            )
+
+        resolved, err = self._check_write_target(file_path)
+        if err is not None or resolved is None:
+            return WriteResult(error=err or f"无法解析写入路径：{file_path}")
+
+        temp_path: str | None = None
+        try:
+            if resolved.exists() and not resolved.is_file():
+                return WriteResult(error=f"Cannot replace {file_path}: target is not a file.")
+
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(
+                prefix=f".{resolved.name}.",
+                suffix=".tmp",
+                dir=str(resolved.parent),
+            )
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.chmod(temp_path, 0o644)
+            except OSError:
+                pass
+            os.replace(temp_path, resolved)
+            temp_path = None
+            return WriteResult(path=file_path)
+        except (OSError, UnicodeEncodeError) as exc:
+            return WriteResult(error=f"Error replacing file '{file_path}': {exc}")
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    async def ainspect_file(
+        self,
+        file_path: str,
+        *,
+        tail_lines: int = 0,
+        count_literals: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self.inspect_file,
+            file_path,
+            tail_lines=tail_lines,
+            count_literals=count_literals,
+        )
+
+    async def areplace_file(self, file_path: str, content: str) -> WriteResult:
+        return await asyncio.to_thread(self.replace_file, file_path, content)
 
     # ----------------------------- execute -----------------------------
     def execute(self, command: str, *, timeout: int | None = None):  # type: ignore[override]

@@ -20,6 +20,7 @@ This skill is a **CDN + embed-template lookup** for 8 commonly-used frontend vis
 - Visual design language (color / typography / spacing) → use `web-design-engineer`
 - Pure static document → PDF conversion → use `md-to-pdf`
 - Backend data processing, no visual output
+- **User provided an object reference image and wants a procedural / animation-ready Three.js reconstruction** → use `object-sculptor` (not this skill)
 
 ---
 
@@ -29,7 +30,8 @@ This skill is a **CDN + embed-template lookup** for 8 commonly-used frontend vis
 |---|---|---|
 | Bar / line / pie / scatter / heatmap / K-line / sankey / funnel / gauge chart | **echarts** | One-line CDN, `renderer:'svg'` makes PNG and PDF both crisp |
 | Complex custom visualization (node graph / tree / chord) | **echarts** or **D3** | echarts has more built-in types, D3 is more freeform |
-| 3D scene / object / lighting / material | **Three.js** | Full WebGL engine, code is controllable |
+| Object reference image → procedural / code-only Three.js model | **`object-sculptor` skill** | Spec + geometry factory + visual gates; stop using this skill |
+| 3D scene / object / lighting / material (no reference reconstruction) | **Three.js** | Full WebGL engine, code is controllable |
 | Ready-made 3D design (user doesn't want to write 3D code) | **Spline** | Remix from community + embed `<spline-viewer>` Web Component |
 | 2D physics animation (gravity / collision / constraint) | **Matter.js** | One-line CDN, intuitive API, mouse-interactive |
 | 2D vector animation / UI motion (state machine) | **Rive** | Community `.riv` file + wasm runtime |

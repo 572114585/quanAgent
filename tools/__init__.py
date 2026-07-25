@@ -10,7 +10,24 @@ tools/ 包，所有调用方 `from tools import web_search, render_html, get_cur
 # Python 返回部分初始化的模块对象,kb_search 名字绑到 module 而非函数,导致 @tool 报错。
 from tools.kb_tool import kb_search, kb_add_document
 from tools.web_search import web_search
+from tools.web_fetch import web_fetch
 from tools.render_html import render_html
 from tools.get_current_time import get_current_time
+from tools.ask_user_question import ask_user_question
+from tools.workspace_files import inspect_file, replace_file
+from tools.research_validate import check_research_material
+from tools.view_image import view_image
 
-__all__ = ["web_search", "render_html", "get_current_time", "kb_search", "kb_add_document"]
+__all__ = [
+    "web_search",
+    "web_fetch",
+    "render_html",
+    "get_current_time",
+    "kb_search",
+    "kb_add_document",
+    "ask_user_question",
+    "inspect_file",
+    "replace_file",
+    "check_research_material",
+    "view_image",
+]

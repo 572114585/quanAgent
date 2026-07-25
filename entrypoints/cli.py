@@ -1,235 +1,429 @@
-"""交互式 CLI 入口实现（根级 demo.py 为薄 shim，委派到此）。
+"""交互式 / 无头 CLI 入口。
 
-收敛到 agent_core.build_agent(hitl=True)，与 web/channel 共享同一 agent 装配路径。
-原 demo.py 的短 prompt / 主 agent 含 web_search / interrupt_on={"web_search":True}
-三项分叉已统一消除（见 agent-code-reorganization.md 决策 #3）：
-  - system_prompt → 统一为 agent_core.SYSTEM_PROMPT（由 build_agent 注入）
-  - 主 agent 工具 [web_search, get_current_time] → [get_current_time, render_html]
-  - interrupt_on={"web_search":True,"execute":True} → {"execute":True}
+用法：
+    python -m entrypoints.cli
+    python -m entrypoints.cli --mode plan
+    python -m entrypoints.cli --format streaming-json -p "解释本仓库"
+    python -m entrypoints.cli --always-approve -p "列出 skills"
 """
-import os
+from __future__ import annotations
+
+import argparse
+import json
 import logging
-import uuid
+import os
 import re
-import base64
-import mimetypes
-from urllib.request import urlopen
+import sys
+import uuid
 
 from dotenv import load_dotenv
-from langfuse import get_client
-from langfuse.langchain import CallbackHandler
 from langchain_core.messages import AIMessageChunk, ToolMessage
 from langgraph.types import Command
 
 from agent_core import build_agent
+from agent_core.events import SCHEMA_VERSION, make_event
+from agent_core.multimodal import build_user_content, to_image_part
+from agent_core.permissions import AgentMode
+from agent_core.stream_emit import emit_ndjson
 
 load_dotenv()
 
-# 开启 deepagents 日志，至少能看到 skill 加载错误
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("deepagents").setLevel(logging.DEBUG)
 
-langfuse = get_client()
-agent = build_agent(hitl=True)
+IMAGE_URL_RE = re.compile(
+    r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:\?[^\s]*)?",
+    re.IGNORECASE,
+)
 
-# 启动时检查 skill 加载情况
-import os as _os
-_skills_dir = _os.path.join("workspace", "skills")
-print(f"\n[SKILL 检查] skills 目录: {_os.path.abspath(_skills_dir)}")
-if _os.path.isdir(_skills_dir):
-    for _name in _os.listdir(_skills_dir):
-        _skill_md = _os.path.join(_skills_dir, _name, "SKILL.md")
-        _status = "✅ 找到" if _os.path.isfile(_skill_md) else "❌ 缺失"
-        print(f"  - {_name}: {_status} SKILL.md")
-else:
-    print(f"  ❌ 目录不存在: {_skills_dir}")
-print()
-
-session_id = str(uuid.uuid4())
-turn_count = 0
-langfuse_handler = CallbackHandler()
-_pending_tool_calls = {}  # 累积流式工具调用分片，key=index
+_pending_tool_calls: dict = {}
 
 
-def log_tool_call(msg_chunk):
-    """累积流式分片，等工具调用完整后一次性打印"""
-    # 累积 AIMessageChunk 中的工具调用分片
+def log_tool_call(msg_chunk, *, json_mode: bool = False) -> None:
     tool_calls = getattr(msg_chunk, "tool_call_chunks", None) or []
     for tc in tool_calls:
         idx = tc.get("index", 0)
         if idx not in _pending_tool_calls:
-            _pending_tool_calls[idx] = {"name": "", "args": ""}
+            _pending_tool_calls[idx] = {"name": "", "args": "", "id": ""}
         if tc.get("name"):
             _pending_tool_calls[idx]["name"] += tc["name"]
         if tc.get("args"):
             _pending_tool_calls[idx]["args"] += tc["args"]
+        if tc.get("id"):
+            _pending_tool_calls[idx]["id"] = tc["id"]
 
-    # 工具执行完成时（ToolMessage）统一输出完整调用
-    if isinstance(msg_chunk, ToolMessage):
-        name = msg_chunk.name or ""
-        content_preview = str(msg_chunk.content)[:300]
-        # 从累积的分片中找对应参数
-        args_str = ""
-        tool_call_id = getattr(msg_chunk, "tool_call_id", "")
-        for tc in _pending_tool_calls.values():
-            if tc["name"] == name:
-                args_str = tc["args"]
-                break
+    if not isinstance(msg_chunk, ToolMessage):
+        return
 
+    name = msg_chunk.name or ""
+    content_preview = str(msg_chunk.content)[:300]
+    args_str = ""
+    call_id = getattr(msg_chunk, "tool_call_id", "") or ""
+    for tc in _pending_tool_calls.values():
+        if tc["name"] == name:
+            args_str = tc["args"]
+            call_id = call_id or tc.get("id") or call_id
+            break
+
+    denied = "[E_PERMISSION_DENIED]" in str(msg_chunk.content) or "[E_SHELL_DENIED]" in str(
+        msg_chunk.content
+    )
+    if json_mode:
+        emit_ndjson(
+            make_event(
+                "tool_call",
+                callId=call_id or f"tc_{uuid.uuid4().hex[:8]}",
+                name=name,
+                args=args_str,
+            )
+        )
+        emit_ndjson(
+            make_event(
+                "tool_result",
+                callId=call_id or f"tc_{uuid.uuid4().hex[:8]}",
+                name=name,
+                output=content_preview,
+                denied=denied,
+            )
+        )
+    else:
         if name == "read_file" and "SKILL.md" in args_str:
             print(f"\n🔧 [SKILL 激活] {name}({args_str})", flush=True)
         else:
             print(f"\n🛠️ [工具调用] {name}({args_str})", flush=True)
-        print(f"📋 [工具结果] {content_preview}{'...' if len(str(msg_chunk.content)) > 300 else ''}", flush=True)
-
-# === 多模态支持：把图片 URL 转成 OpenAI 格式 ===
-IMAGE_URL_RE = re.compile(
-    r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:\?[^\s]*)?',
-    re.IGNORECASE,
-)
-
-def to_image_part(url: str) -> dict:
-    """把图片引用转成 OpenAI image_url part。HTTP URL 先下载再 base64。"""
-    if url.startswith("data:"):
-        return {"type": "image_url", "image_url": {"url": url}}
-    if url.startswith(("http://", "https://")):
-        data = urlopen(url, timeout=10).read()
-        mime, _ = mimetypes.guess_type(url)
-        mime = mime or "image/jpeg"
-        b64 = base64.b64encode(data).decode("ascii")
-        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-    raise ValueError(f"不支持的图片引用: {url}")
-
-def build_user_content(text: str, image_urls: list[str]) -> str | list[dict]:
-    """没图 → 返回字符串；    有图 → 返回 list[dict] 多模态 content。"""
-    if not image_urls:
-        return text
-    parts = [to_image_part(u) for u in image_urls]
-    parts.append({"type": "text", "text": text})
-    return parts
-# =============================================
+        print(
+            f"📋 [工具结果] {content_preview}"
+            f"{'...' if len(str(msg_chunk.content)) > 300 else ''}",
+            flush=True,
+        )
 
 
-def main() -> None:
-    """交互式 CLI 主循环（含 HITL 确认）。"""
-    global turn_count
+def _print_skill_check() -> None:
+    skills_dir = os.path.join("workspace", "skills")
+    print(f"\n[SKILL 检查] skills 目录: {os.path.abspath(skills_dir)}")
+    if os.path.isdir(skills_dir):
+        for name in os.listdir(skills_dir):
+            skill_md = os.path.join(skills_dir, name, "SKILL.md")
+            status = "✅ 找到" if os.path.isfile(skill_md) else "❌ 缺失"
+            print(f"  - {name}: {status} SKILL.md")
+    else:
+        print(f"  ❌ 目录不存在: {skills_dir}")
+    print()
+
+
+def _hitl_loop(agent, config: dict, *, json_mode: bool, always_approve: bool) -> None:
+    from tools.ask_user_question import ASK_USER_KIND, collect_interrupt_groups
+
+    while True:
+        state = agent.get_state(config)
+        if not state.next:
+            break
+
+        groups = collect_interrupt_groups(state)
+        if not groups:
+            break
+
+        if json_mode:
+            emit_ndjson(make_event("interrupt", groups=groups))
+
+        resume_map: dict = {}
+        for grp in groups:
+            kind = grp.get("kind")
+            iid = grp["interruptId"]
+            if kind == ASK_USER_KIND:
+                questions = grp.get("questions") or []
+                title = grp.get("title") or "需要你的确认"
+                if always_approve or json_mode:
+                    answers = []
+                    for q in questions:
+                        opts = q.get("options") or []
+                        selected = [opts[0]] if opts else ["确认继续"]
+                        answers.append(
+                            {"questionId": q.get("id"), "selected": selected, "text": ""}
+                        )
+                    if json_mode and not always_approve:
+                        print(
+                            f"[ASK] auto-answer in streaming-json: {title}",
+                            file=sys.stderr,
+                        )
+                    resume_map[iid] = {"answers": answers}
+                    continue
+
+                print(f"\n❓ {title}")
+                answers = []
+                for q in questions:
+                    qid = q.get("id")
+                    prompt = q.get("prompt") or ""
+                    opts = q.get("options") or []
+                    allow_multi = bool(q.get("allowMultiple"))
+                    allow_free = bool(q.get("allowFreeText", True))
+                    print(f"\n  [{qid}] {prompt}")
+                    selected: list[str] = []
+                    if opts:
+                        for i, o in enumerate(opts, 1):
+                            print(f"    {i}. {o}")
+                        hint = "可多选，逗号分隔编号" if allow_multi else "输入编号"
+                        raw = input(f"    选择（{hint}，回车跳过）: ").strip()
+                        if raw:
+                            for part in raw.split(","):
+                                part = part.strip()
+                                if part.isdigit():
+                                    idx = int(part) - 1
+                                    if 0 <= idx < len(opts):
+                                        selected.append(opts[idx])
+                    text = ""
+                    if allow_free:
+                        text = input("    补充说明（可空）: ").strip()
+                    if not selected and not text and opts:
+                        selected = [opts[0]]
+                    if not selected and not text:
+                        selected = ["确认继续"]
+                    answers.append({"questionId": qid, "selected": selected, "text": text})
+                resume_map[iid] = {"answers": answers}
+                continue
+
+            # tool_approval
+            action_requests = grp.get("toolCalls") or []
+            grp_decisions = []
+            total = len(action_requests)
+            for flat_idx, req in enumerate(action_requests, 1):
+                tool_name = req.get("name", "未知工具")
+                tool_args = req.get("args", {})
+                if always_approve:
+                    grp_decisions.append({"type": "approve"})
+                    continue
+                if json_mode:
+                    print(
+                        f"[HITL] auto-reject in streaming-json without --always-approve: {tool_name}",
+                        file=sys.stderr,
+                    )
+                    grp_decisions.append({"type": "reject"})
+                    continue
+                print(f"\n⚠️ [{flat_idx}/{total}] 需要确认：是否允许调用 [{tool_name}]？")
+                print(f"   参数: {tool_args}")
+                user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
+                if user_decision == "y":
+                    print("   ✅ 已批准")
+                    grp_decisions.append({"type": "approve"})
+                else:
+                    print("   ❌ 已拒绝")
+                    grp_decisions.append({"type": "reject"})
+            resume_map[iid] = {"decisions": grp_decisions}
+
+        need_prefix = True
+        _pending_tool_calls.clear()
+        try:
+            for msg_chunk, _meta in agent.stream(
+                Command(resume=resume_map),
+                config=config,
+                stream_mode="messages",
+            ):
+                log_tool_call(msg_chunk, json_mode=json_mode)
+                if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
+                    text = msg_chunk.content
+                    if isinstance(text, list):
+                        text = "".join(
+                            p.get("text", "")
+                            for p in text
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        )
+                    if not text:
+                        continue
+                    if json_mode:
+                        emit_ndjson(make_event("delta", delta=str(text)))
+                    else:
+                        print(
+                            f"{'小权: ' if need_prefix else ''}{text}",
+                            end="",
+                            flush=True,
+                        )
+                        need_prefix = False
+            if not json_mode:
+                print()
+        except Exception as e:  # noqa: BLE001
+            if json_mode:
+                emit_ndjson(make_event("error", message=f"{type(e).__name__}: {e}"))
+            else:
+                print(f"\n⚠️ 恢复执行异常: {type(e).__name__}: {e}")
+
+        if not agent.get_state(config).next:
+            break
+
+
+def run_once(
+    agent,
+    user_input: str,
+    *,
+    session_id: str,
+    turn: int,
+    json_mode: bool,
+    always_approve: bool,
+    max_turns: int | None,
+) -> None:
+    if max_turns is not None and turn > max_turns:
+        if json_mode:
+            emit_ndjson(make_event("error", message=f"exceeded max-turns={max_turns}"))
+            emit_ndjson(make_event("done", messageId=f"turn-{turn}"))
+        else:
+            print(f"⚠️ 已达 --max-turns={max_turns}")
+        return
+
+    message_id = str(uuid.uuid4())
+    if json_mode:
+        emit_ndjson(make_event("start", messageId=message_id))
+
+    config = {
+        "configurable": {"thread_id": session_id},
+        "run_name": f"turn{turn}: {user_input[:20]}{'…' if len(user_input) > 20 else ''}",
+    }
+
+    image_urls = IMAGE_URL_RE.findall(user_input)
+    text = IMAGE_URL_RE.sub("", user_input).strip() or "请描述这张图"
+    try:
+        user_content = build_user_content(text, image_urls)
+    except Exception as e:  # noqa: BLE001
+        if json_mode:
+            emit_ndjson(make_event("error", message=f"load image failed: {e}"))
+        else:
+            print(f"\n⚠️ 加载图片失败: {e}")
+        user_content = text
+
+    need_prefix = True
+    _pending_tool_calls.clear()
+    try:
+        for msg_chunk, _meta in agent.stream(
+            {"messages": [{"role": "user", "content": user_content}]},
+            stream_mode="messages",
+            config=config,
+        ):
+            log_tool_call(msg_chunk, json_mode=json_mode)
+            if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
+                content = msg_chunk.content
+                if isinstance(content, list):
+                    content = "".join(
+                        p.get("text", "")
+                        for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                if not content:
+                    continue
+                if json_mode:
+                    emit_ndjson(make_event("delta", delta=str(content)))
+                else:
+                    print(f"{'小权: ' if need_prefix else ''}{content}", end="", flush=True)
+                    need_prefix = False
+        if not json_mode:
+            print()
+    except Exception as e:  # noqa: BLE001
+        if json_mode:
+            emit_ndjson(make_event("error", message=f"{type(e).__name__}: {e}"))
+        else:
+            print(f"\n⚠️ 异常: {type(e).__name__}: {e}")
+
+    _hitl_loop(agent, config, json_mode=json_mode, always_approve=always_approve)
+
+    if json_mode:
+        emit_ndjson(make_event("done", messageId=message_id))
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="DeepAgent CLI")
+    p.add_argument("-p", "--prompt", help="单次提示（无头）；省略则进入交互循环")
+    p.add_argument(
+        "--format",
+        choices=("text", "streaming-json"),
+        default="text",
+        help="输出格式：text（默认）或 streaming-json（NDJSON）",
+    )
+    p.add_argument(
+        "--mode",
+        choices=("agent", "plan"),
+        default=None,
+        help="agent（默认可执行）或 plan（只规划）",
+    )
+    p.add_argument(
+        "--always-approve",
+        action="store_true",
+        help="自动批准所有 HITL（ask→allow）",
+    )
+    p.add_argument("--max-turns", type=int, default=None, help="最大轮次（含交互）")
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    mode: AgentMode = args.mode or (
+        "plan" if os.getenv("AGENT_MODE", "").lower() == "plan" else "agent"
+    )
+    json_mode = args.format == "streaming-json"
+    # 仅显式 --always-approve 升权；输出格式不得改变安全策略
+    always_approve = bool(args.always_approve)
+    hitl = not always_approve
+
+    agent = build_agent(
+        hitl=hitl,
+        mode=mode,
+        entrypoint="cli",
+        always_approve=always_approve,
+    )
+
+    if not json_mode:
+        _print_skill_check()
+        print(f"[CLI] mode={mode} hitl={hitl} schemaVersion={SCHEMA_VERSION}")
+
+    try:
+        from langfuse import get_client
+        from langfuse.langchain import CallbackHandler
+
+        get_client()
+        _ = CallbackHandler  # 可选；交互路径不强依赖
+    except Exception:  # noqa: BLE001
+        pass
+
+    session_id = str(uuid.uuid4())
+
+    if args.prompt is not None:
+        run_once(
+            agent,
+            args.prompt,
+            session_id=session_id,
+            turn=1,
+            json_mode=json_mode,
+            always_approve=always_approve,
+            max_turns=args.max_turns,
+        )
+        return
+
+    if json_mode:
+        print(
+            "streaming-json 交互模式请用 -p；或省略 --format 进入文本交互",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    turn = 0
     while True:
         user_input = input("\n👤 你: ")
         if user_input.lower() == "exit":
             print("小权: 再见！")
             break
+        turn += 1
+        if args.max_turns is not None and turn > args.max_turns:
+            print(f"⚠️ 已达 --max-turns={args.max_turns}")
+            break
+        run_once(
+            agent,
+            user_input,
+            session_id=session_id,
+            turn=turn,
+            json_mode=False,
+            always_approve=always_approve,
+            max_turns=None,
+        )
 
-        turn_count += 1
-        need_prefix = True
 
-        config = {
-            "callbacks": [langfuse_handler],
-            "configurable": {
-                "thread_id": session_id,
-            },
-            "run_name": f"turn{turn_count}: {user_input[:20]}{'…' if len(user_input) > 20 else ''}",
-            "metadata": {
-                "langfuse_session_id": session_id,
-                "langfuse_tags": ["deepagents"],
-            },
-        }
-
-        try:
-            # === 多模态：扫消息里的图片 URL ===
-            image_urls = IMAGE_URL_RE.findall(user_input)
-            text = IMAGE_URL_RE.sub('', user_input).strip() or "请描述这张图"
-            try:
-                user_content = build_user_content(text, image_urls)
-            except Exception as e:
-                print(f"\n⚠️ 加载图片失败: {e}")
-                user_content = text
-            # ===================================
-
-            _pending_tool_calls.clear()  # 清空上一轮的工具调用分片
-            for msg_chunk, _meta in agent.stream(
-                {"messages": [{"role": "user", "content": user_content}]},
-                stream_mode="messages",
-                config=config,
-            ):
-                log_tool_call(msg_chunk)
-                if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
-                    print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
-                    need_prefix = False
-            print()
-        except Exception as e:
-            print(f"\n⚠️ 异常: {type(e).__name__}: {e}")
-
-        state_check = agent.get_state(config)
-        print(f"[DEBUG] 首次stream后 state.next={state_check.next}")
-
-        # HITL 循环：可能多轮中断，每轮恢复后都要再检查
-        while True:
-            state = agent.get_state(config)
-            if not state.next:
-                break  # 没有挂起的中断，退出循环
-
-            # 按 interrupt 分组提取 action_requests
-            # 多 pending interrupt 必须按 interrupt_id 索引恢复，否则报：
-            #   "When there are multiple pending interrupts, you must specify the interrupt id when resuming"
-            # 见 https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
-            groups = []
-            for task in state.tasks:
-                for interrupt in task.interrupts:
-                    action_requests = interrupt.value.get("action_requests", [])
-                    if action_requests:
-                        groups.append(
-                            {"interruptId": interrupt.id, "action_requests": action_requests}
-                        )
-
-            if not groups:
-                print(f"\n[DEBUG] state.next={state.next} 但无 action_requests，中断值：", [t.interrupts for t in state.tasks])
-                break
-
-            # 逐个确认每个工具调用，按 interrupt_id 收集 decisions
-            resume_map = {}
-            flat_idx = 0
-            total = sum(len(g["action_requests"]) for g in groups)
-            for grp in groups:
-                grp_decisions = []
-                for req in grp["action_requests"]:
-                    flat_idx += 1
-                    tool_name = req.get("name", "未知工具")
-                    tool_args = req.get("args", {})
-                    print(f"\n⚠️ [{flat_idx}/{total}] 需要确认：是否允许调用 [{tool_name}]？")
-                    print(f"   参数: {tool_args}")
-
-                    user_decision = input("   输入 y 批准 / n 拒绝: ").strip().lower()
-                    if user_decision == "y":
-                        print("   ✅ 已批准")
-                        grp_decisions.append({"type": "approve"})
-                    else:
-                        print("   ❌ 已拒绝")
-                        grp_decisions.append({"type": "reject"})
-                resume_map[grp["interruptId"]] = {"decisions": grp_decisions}
-
-            # 恢复执行：一次调用恢复所有 pending interrupt
-            print(f"\n[DEBUG] 恢复执行，resume_map={resume_map}")
-            need_prefix = True
-            try:
-                _pending_tool_calls.clear()  # 清空上一轮的工具调用分片
-                for msg_chunk, _meta in agent.stream(
-                    Command(resume=resume_map),
-                    config=config,
-                    stream_mode="messages",
-                ):
-                    log_tool_call(msg_chunk)
-                    if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
-                        print(f"{'小权: ' if need_prefix else ''}{msg_chunk.content}", end="", flush=True)
-                        need_prefix = False
-                print()
-            except Exception as e:
-                print(f"\n⚠️ 恢复执行异常: {type(e).__name__}: {e}")
-
-            # 恢复后再检查一轮（Agent 可能再次触发中断）
-            state_after = agent.get_state(config)
-            print(f"[DEBUG] 恢复后 state.next={state_after.next}")
-            if not state_after.next:
-                break
+if __name__ == "__main__":
+    main()

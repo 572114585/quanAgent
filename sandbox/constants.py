@@ -11,10 +11,13 @@ import re
 #   无写入/网络副作用，物理工作目录受 root_dir 锁定。
 # - 目录切换类（cd/pushd/popd/chdir）：目标经路径改写后必须在 root_dir 子树内，
 #   越界由 cd 沙箱校验拦截。
+# workspace_auto 下与 execute_policy 对齐的只读/探查 head；
+# 软白名单仍作 strict 兜底；HITL 批准或 classification=auto 时可绕过。
 DEFAULT_ALLOWED_COMMANDS: frozenset[str] = frozenset(
     {
         "python",
         "python3",
+        "py",
         "ls",
         "dir",
         "cat",
@@ -29,11 +32,42 @@ DEFAULT_ALLOWED_COMMANDS: frozenset[str] = frozenset(
         "pushd",
         "popd",
         "chdir",
+        "wc",
+        "grep",
+        "findstr",
+        "rg",
+        "sort",
+        "uniq",
+        "tr",
+        "cut",
+        "date",
+        "whoami",
+        "hostname",
+        "which",
+        "where",
+        "tree",
+        "git",
+        "pytest",
+        "ruff",
+        "mypy",
+        "black",
+        "tsc",
+        "vue-tsc",
+        "eslint",
+        "prettier",
+        "make",
     }
 )
 
 # 拦截的命令替换语法：反引号、$()。
 _COMMAND_SUBSTITUTION_PATTERN = re.compile(r"`|\$\(")
+# 极危险命令硬拒绝（HITL 批准也不可绕过）。对齐 grok-build：deny 优先于审批。
+_HARD_DENY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # rm -rf / 或 rm -rf /*（\b 在 / 后不可靠，改用空白或行尾）
+    re.compile(r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*[rf][a-zA-Z]*\s+(/|/\*)(?:\s|$)", re.I),
+    re.compile(r"\b(format|mkfs)\b", re.I),
+    re.compile(r"\bdd\s+.*\bof=/dev/", re.I),
+)
 # python 危险选项：-c（内联代码）、-m（模块）、-（stdin）。
 _PYTHON_BLOCKED_OPTIONS = frozenset({"-c", "-m", "-"})
 # bash/sh 危险选项：-c（内联代码）、-s（从 stdin 执行）、-（stdin）。

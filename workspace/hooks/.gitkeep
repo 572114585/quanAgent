@@ -1,0 +1,2 @@
+# Hooks 脚本目录：放置 *.py，导出 before_tool / after_tool。
+# 示例见 README；以下划线开头的文件会被忽略。

@@ -1,7 +1,7 @@
 ---
 name: md-to-pdf
 description: "把 Markdown(可多源)整理后渲染为带印刷级排版的 HTML 中间产物,再用 Playwright 转为 PDF。当用户要把 Markdown 或 Markdown 集合做成排版精良的 PDF 文档时调用。不用于纯文本提取、PPT、网页交互原型。"
-allowed-tools: execute read_file write_file edit_file
+allowed-tools: execute read_file inspect_file write_file edit_file replace_file
 ---
 
 # MD to PDF
@@ -9,7 +9,7 @@ allowed-tools: execute read_file write_file edit_file
 本 skill 把 Markdown(单个或多个)做成排版精良的 PDF。**LLM 参考 showcase 真实渲染示例 + 零件目录,自行设计 HTML 再转 PDF**——既有模板范式参考,又能自由发挥设计。
 
 ```
-MD(多源) ─[merge: 默认保图]─► 合并MD ─[plan: 参考showcase+零件目录]─► LLM write_file custom.html ─[render_pdf.py: Playwright]─► PDF
+MD(多源) ─[merge: 默认保图]─► 合并MD ─[plan: 参考showcase+零件目录]─► LLM replace_file custom.html ─[render_pdf.py: Playwright]─► PDF
 ```
 
 **核心定位:印刷级排版**,不是"能看就行"。强制产出 HTML 中间产物 + Checkpoint 预览。
@@ -17,7 +17,7 @@ MD(多源) ─[merge: 默认保图]─► 合并MD ─[plan: 参考showcase+零�
 ### 工作流概览
 1. 翻 `references/showcase/{lite,medium,paper}/sample.html` 选整体范式(真实渲染示例,浏览器直接打开看效果)
 2. 从 `references/component-catalog.md` 挑零件组装(布局/标题/摘要/代码/表格/callout/页眉页脚/数学/图/参考文献 11 类,每类多变体 + 跨模板组合示例)
-3. `write_file output/custom.html`(内嵌完整 CSS,自包含,公式用 HTML 实体手工排版,图片包 figure 控尺寸)
+3. `replace_file output/custom.html`(内嵌完整 CSS,自包含,公式用 HTML 实体手工排版,图片包 figure 控尺寸)
 4. `render_pdf.py --html output/custom.html --out output/custom.pdf`
 
 > 历史背景:早期版本用"套死模板"模式(4 个自包含模板 + md_to_html.py 脚本路由 slot),LLM 选模板时看不到渲染效果、无法跨模板借鉴组件,导致"模板没参考价值"。现重构为单一自由设计模式,删掉模板和路由脚本,只保留 showcase 真实示例 + 零件目录作为参考素材。
@@ -40,7 +40,7 @@ MD(多源) ─[merge: 默认保图]─► 合并MD ─[plan: 参考showcase+零�
 |---|---|---|
 | **1. 合并** | `scripts/merge_sources.py` | 多源 MD → 单 MD(默认保图)。单一 MD 跳过 |
 | **2. 规划** | LLM 决策(无脚本) | 参考 showcase + 零件目录,设计 HTML 骨架 + 组件选型 + 配色 |
-| **3. 渲染 HTML** | LLM `write_file output/custom.html` | 内嵌完整 CSS,自包含。公式用 HTML 实体,图片包 figure |
+| **3. 渲染 HTML** | LLM `replace_file output/custom.html` | 内嵌完整 CSS,自包含。公式用 HTML 实体,图片包 figure |
 | **4. 渲染 PDF** | `scripts/render_pdf.py` | Playwright async,HTML → PDF |
 
 > **HTML 是必经中间产物,不是副作用**。它让用户在烧成 PDF 前可以预览、改 CSS、改内容。永远要产出 HTML 中间产物(Checkpoint 2 预览强制),不要跳过 HTML 直接 MD→PDF。
@@ -90,8 +90,8 @@ MD(多源) ─[merge: 默认保图]─► 合并MD ─[plan: 参考showcase+零�
 
 1. **命令必须单行**:`execute(command=...)` 的 command 是单行字符串,禁止反斜杠续行或裸换行。
 2. **中文/JSON 用双引号包裹,内部双引号用 `\"` 转义**。
-3. **只调用本 skill 自带脚本**(`merge_sources.py` / `render_pdf.py`)。禁止 `write_file` 自写 `.py` 脚本再 `execute`——runtime 白名单会拦截。**允许 `write_file` 直接写 `.html`**(LLM 设计 HTML → `write_file output/custom.html` → `render_pdf.py --html`)。
-4. **输出只写 `output/`**:`write_file`/`edit_file` 受限,`skills/` 目录只读。`custom.html` 也放 `output/`。
+3. **只调用本 skill 自带脚本**(`merge_sources.py` / `render_pdf.py`)。禁止 `write_file` / `replace_file` 自写 `.py` 脚本再 `execute`——runtime 白名单会拦截。**HTML 用 `replace_file` 写入**(LLM 设计 HTML → `replace_file output/custom.html` → `render_pdf.py --html`)。
+4. **输出只写 `output/`**:`write_file`/`edit_file`/`replace_file` 受限,`skills/` 目录只读。`custom.html` 也放 `output/`。
 
 脚本路径(workspace 根目录为工作目录):
 
@@ -184,12 +184,12 @@ Design Decisions:
 
 ### Step 3:渲染 HTML(LLM 自由设计)
 
-LLM 直接 `write_file output/custom.html` 产出 HTML。流程:
+LLM 直接 `replace_file output/custom.html` 产出 HTML。流程:
 
 1. **解析 MD 内容**:读取合并后的 MD,理解章节结构(H1/H2/H3)、图片位置、表格、代码块、公式等
 2. **参考 showcase 选范式**:读 `references/showcase/{lite,medium,paper}/sample.html` 选整体布局风格(浏览器打开看效果)
 3. **从零件目录挑组件**:读 `references/component-catalog.md`,按 11 类挑组件(布局/标题/摘要/代码/表格/callout/页眉页脚/数学/图/参考文献/列表),可跨模板组合
-4. **`write_file output/custom.html`**:产出自包含 HTML(CSS 全 inline 进 `<style>`,不依赖外部文件),内容来自 MD,版式来自组件选型
+4. **`replace_file output/custom.html`**:产出自包含 HTML(CSS 全 inline 进 `<style>`,不依赖外部文件),内容来自 MD,版式来自组件选型
 
 产出的 HTML 必须满足:
 - **自包含**:CSS 全 inline,浏览器直接打开能看完整效果

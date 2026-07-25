@@ -1,7 +1,7 @@
 ---
 name: document-builder
 description: "文档生成端到端编排 skill。把用户的一句话需求(如'做一份 AI Agent 技术调研 PDF')变成结构化 PDF。负责整合检索深度调控(research-strategies)→ 大纲规划(outline-planner)→ 逐节撰写(section-writer)→ 自动 Review(auto-review)→ 局部返工 → HTML 制作(md-to-pdf)→ PDF 交付的完整闭环。支持产品介绍/技术调研/新闻日报/数据分析 4 种文档类型。不用于单一环节(仅检索/仅渲染),不用于 PPT/网页原型。"
-allowed-tools: task read_file write_file edit_file execute
+allowed-tools: task read_file write_file edit_file inspect_file replace_file check_research_material execute ask_user_question
 ---
 
 # Document Builder 文档生成端到端编排
@@ -68,10 +68,10 @@ allowed-tools: task read_file write_file edit_file execute
 - 特殊要求:是否需要图表、是否需要引用、纸张大小等
 ```
 
-若用户需求模糊(如"做个报告"),用 AskUserQuestion 确认文档类型和主题。明确后存档:
+若用户需求模糊(如"做个报告"),调用 `ask_user_question` 确认文档类型和主题（勿用纯文本假装提问）。明确后存档:
 
 ```
-write_file(path="/research_request.md", content="<用户原始需求 + 文档类型 + 深度等级 + 受众 + 页数>")
+replace_file(path="/tmp/research_request.md", content="<用户原始需求 + 文档类型 + 深度等级 + 受众 + 页数>")
 ```
 
 ### Step 1:委托检索(Phase 2.1 - 检索深度调控)
@@ -86,11 +86,13 @@ write_file(path="/research_request.md", content="<用户原始需求 + 文档类
    - description 注明:"<doc_type> <depth>: <主题>"
    - 一次一个明确主题,多主题可并行(最多 3 个并发)
    - research-agent 按 research-strategies 两阶段检索,落盘到 /tmp/research/<topic>.md
-3. 检索 Review(主 Agent 对照策略审查):
+3. 检索 Review（主 Agent **必须先调用 check_research_material**，再用 read_file 抽查正文）:
+   - 对每个素材调用 `check_research_material(path="/tmp/research/<topic>.md", depth="<brief|standard|in-depth>")`
+   - **全文落盘（硬）**:素材是否含 `## 抓取记录`？深度段字数是否够（standard 单条约≥3k / in-depth 约≥5k）？禁止接受自写要点笔记
    - 覆盖度:策略要求的关键词/维度都搜了吗?
    - 相关性:结果和主题相关吗?
    - 来源质量:权威来源占比够吗?
-   - 数量:结果条数达到策略要求吗?
+   - 数量:深度抓取 URL 数是否达到策略 top N?
    不吻合 → 再派一轮,最多补检 2 轮
 ```
 
@@ -103,7 +105,7 @@ Step 2a:表达什么(What to say)
   - read_file /tmp/research/*.md 读取检索素材
   - 按文档类型模板(references/doc-type-templates.md)生成结构化大纲
   - 每节含:标题/摘要/预计字数/所需数据点/来源引用编号
-  - write_file /tmp/outline.md
+  - replace_file /tmp/outline.md（允许同一线程或重跑安全覆盖旧大纲）
 
 Step 2b:怎么表达(How to present)
   - 逐节审视,挑选最佳表达方式(表格/图表/流程图/概念图/对比矩阵/数据卡片)
@@ -114,16 +116,22 @@ Step 2b:怎么表达(How to present)
 ### Step 3:🛑 HITL Checkpoint 1 - 大纲确认
 
 ```
-将 /tmp/outline.md 完整展示给用户:
-- 章节结构是否合理?
-- 每节的表达方式是否恰当?
-- 是否需要增删章节或调整表达方式?
-
-用户要求调整 → 修改大纲 → 重新确认
-用户确认 → 进入逐节撰写
+1. 先把 /tmp/outline.md 内容展示给用户（可读摘要即可）
+2. 必须调用 ask_user_question，例如：
+   ask_user_question(
+     title="大纲确认",
+     questions=[
+       {"id":"structure","prompt":"章节结构是否合理？","options":["合理，继续撰写","需要调整"],"allowFreeText":true},
+       {"id":"presentation","prompt":"各节表达方式（表格/图表/流程图等）是否恰当？","options":["恰当","需要调整"],"allowFreeText":true},
+       {"id":"scope","prompt":"是否需要增删章节或调整内容方向？","options":["不需要，按此大纲写","需要调整"],"allowFreeText":true}
+     ]
+   )
+3. 根据工具返回的真实用户答案决定：
+   - 用户要求调整 → 修改大纲 → 再次 ask_user_question
+   - 用户确认 → 进入逐节撰写
 ```
 
-> **必须真的等用户确认**,不要说完就开干。大纲是文档骨架,改大纲比改正文成本低 10 倍。
+> **必须调用 `ask_user_question` 真等用户**，禁止纯文本「请确认」后自行假设通过。大纲是文档骨架，改大纲比改正文成本低 10 倍。
 
 ### Step 4:逐节撰写(Phase 2.3 - Map-Reduce)
 
@@ -163,7 +171,7 @@ Reduce 阶段(串行):
    - 连贯性:章节间逻辑通顺吗?有矛盾吗?
    - 完整性:有没有空节、占位符、TODO 残留?
 3. 生成问题清单,按严重程度分级(P0-P5)
-4. write_file /tmp/review_report.md
+4. replace_file /tmp/review_report.md
 ```
 
 ### Step 6:局部返工(Phase 2.4 - 仅当 Review 不通过时)
@@ -203,7 +211,7 @@ Reduce 阶段(串行):
    - ⚠️ 必须用 merge_sources.py,不要用 read_file 手动读各节再拼接——脚本会重写相对图片路径为 file:// 绝对路径,手动拼接会让 section-writer 写的相对图片路径失效(丢图根因)
    - 合并后核对输出里的图片计数行:"图片:源共 N 张,合并后 M 张"。若 M < N 且未传 --strip-images,会打印 [WARN],必须排查重跑
    - 单节文档可跳过此步,直接用 /tmp/sections/section_1.md 作为输入 MD
-4. write_file output/document.html:
+4. replace_file output/document.html:
    - 输入 MD 是上一步合并后的 /tmp/merged.md(或单节场景的 section_1.md)
    - 把占位符 {{chart:...}} 替换为实际 HTML 可视化组件(echarts svg renderer)
    - CSS 全 inline,自包含
@@ -218,16 +226,19 @@ Reduce 阶段(串行):
 ### Step 8:🛑 HITL Checkpoint 2 - 终稿确认
 
 ```
-PDF 渲染前,把最终内容(HTML 预览)展示给用户:
-- 内容是否完整?
-- 排版是否满意?
-- 是否需要调整?
-
-用户要求调整 → 回 Step 4/5/7 对应环节修改
-用户确认 → 渲染最终 PDF
+PDF 渲染前：
+1. 展示最终内容/HTML 预览要点
+2. 调用 ask_user_question(
+     title="终稿确认",
+     questions=[
+       {"id":"content","prompt":"内容是否完整、可交付？","options":["确认，渲染 PDF","需要调整"],"allowFreeText":true},
+       {"id":"layout","prompt":"排版是否满意？","options":["满意","需要调整"],"allowFreeText":true}
+     ]
+   )
+3. 用户要求调整 → 回 Step 4/5/7；用户确认 → 渲染最终 PDF
 ```
 
-> **终稿确认是交付前的最后一道关**。PDF 渲染耗时,渲染后再改成本高。
+> **终稿确认是交付前的最后一道关**。必须用 `ask_user_question` 等待真实回复，禁止自说自话跳过。
 
 ### Step 9:PDF 渲染与交付(Phase 2.5 - Playwright)
 
@@ -274,7 +285,7 @@ PDF 渲染前,把最终内容(HTML 预览)展示给用户:
 | 各节内容 | `/tmp/sections/<section_n>.md` | 逐节撰写产出 |
 | Review 报告 | `/tmp/review_report.md` | 含问题清单+返工记录 |
 | 检索素材 | `/tmp/research/<topic>.md` | research-agent 落盘 |
-| 原始需求存档 | `/research_request.md` | 用户需求+文档类型+深度+受众 |
+| 原始需求存档 | `/tmp/research_request.md` | 用户需求+文档类型+深度+受众 |
 
 ---
 

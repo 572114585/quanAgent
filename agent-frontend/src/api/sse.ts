@@ -32,26 +32,48 @@ function resolveBaseURL(): string {
   )
 }
 
-/** 解析 SSE 一帧，支持多行 data 合并，遇到空行返回 null。 */
-function parseSseFrame(frame: string): StreamEvent | null {
+/** Bearer Token：VITE_AGENT_API_TOKEN；未配置时不附加 Authorization。 */
+export function resolveApiToken(): string {
+  return ((import.meta.env.VITE_AGENT_API_TOKEN as string | undefined) || '').trim()
+}
+
+/** 供 SSE / REST 共用的鉴权头。 */
+export function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) }
+  const token = resolveApiToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
+}
+
+/** 解析 SSE 一帧，支持多行 data 合并与 id: 字段；遇到空行返回 null。 */
+function parseSseFrame(frame: string): (StreamEvent & { _sseId?: string }) | null {
   if (!frame) return null
   const normalized = frame.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
   const dataLines: string[] = []
+  let sseId = ''
   for (const raw of normalized.split('\n')) {
     const line = raw
     if (!line) continue
     if (line.startsWith(':')) continue
+    const idMatch = /^id:\s?(.*)$/.exec(line)
+    if (idMatch) {
+      sseId = idMatch[1]
+      continue
+    }
     const m = /^data:\s?(.*)$/.exec(line)
     if (m) dataLines.push(m[1])
   }
   if (dataLines.length === 0) return null
   const payload = dataLines.join('\n')
   if (payload === '[DONE]') {
-    return { type: 'done', messageId: '' }
+    return { type: 'done', messageId: '', eventId: sseId || undefined, _sseId: sseId || undefined }
   }
   try {
     const parsed = JSON.parse(payload) as StreamEvent
-    return parsed
+    if (sseId && !parsed.eventId) {
+      ;(parsed as StreamEvent & { eventId?: string }).eventId = sseId
+    }
+    return { ...parsed, _sseId: sseId || undefined }
   } catch {
     return { type: 'error', message: `无法解析 SSE 帧: ${payload.slice(0, 120)}` }
   }
@@ -131,6 +153,8 @@ export interface ChatStreamOptions {
   signal: AbortSignal
   /** 当服务端推送 usage 事件时回调（仅做透传统计）。 */
   onUsage?: (u: { prompt: number; completion: number }) => void
+  /** 每个事件携带 eventId 时回调，供断线补流游标。 */
+  onEventId?: (eventId: string, runId?: string) => void
 }
 
 /**
@@ -141,7 +165,8 @@ async function* postStream(
   path: string,
   body: any,
   signal: AbortSignal,
-  onUsage?: (u: { prompt: number; completion: number }) => void
+  onUsage?: (u: { prompt: number; completion: number }) => void,
+  onEventId?: (eventId: string, runId?: string) => void
 ): AsyncGenerator<StreamEvent> {
   if (signal.aborted) return
 
@@ -150,10 +175,10 @@ async function* postStream(
 
   const resp = await fetch(url, {
     method: 'POST',
-    headers: {
+    headers: authHeaders({
       'Content-Type': 'application/json',
       Accept: 'text/event-stream, application/json;q=0.9, */*;q=0.5'
-    },
+    }),
     body: JSON.stringify(body),
     signal
   }).catch((err: unknown) => {
@@ -200,28 +225,36 @@ async function* postStream(
   }
 
   let sawDone = false
+  const seenEventIds = new Set<string>()
   try {
     for await (const frame of iterSseFrames(resp.body, signal)) {
       const evt = parseSseFrame(frame)
       if (!evt) continue
-      if (evt.type === 'usage') {
+      const eventId = evt.eventId || evt._sseId
+      if (eventId) {
+        if (seenEventIds.has(eventId)) continue
+        seenEventIds.add(eventId)
+        onEventId?.(eventId, evt.runId)
+      }
+      const { _sseId: _drop, ...clean } = evt as StreamEvent & { _sseId?: string }
+      if (clean.type === 'usage') {
         onUsage?.({
-          prompt: evt.promptTokens,
-          completion: evt.completionTokens
+          prompt: clean.promptTokens,
+          completion: clean.completionTokens
         })
         continue
       }
-      if (evt.type === 'done') {
+      if (clean.type === 'done') {
         sawDone = true
-        yield evt
+        yield clean
         return
       }
-      if (evt.type === 'error') {
-        yield evt
+      if (clean.type === 'error') {
+        yield clean
         yield { type: 'done', messageId: '' }
         return
       }
-      yield evt
+      yield clean
     }
   } catch (err) {
     if ((err as Error)?.name === 'AbortError') return
@@ -239,7 +272,7 @@ export async function* chatStream(
   req: ChatRequest,
   opts: ChatStreamOptions
 ): AsyncGenerator<StreamEvent> {
-  yield* postStream('/chat', req, opts.signal, opts.onUsage)
+  yield* postStream('/chat', req, opts.signal, opts.onUsage, opts.onEventId)
 }
 
 /** 获取当前生效的 baseURL（供 uploadFile 等使用）。 */
@@ -249,8 +282,8 @@ export function getRuntimeBaseUrl(): string {
 
 /** HITL resume 专用流。body.decisions 按 interrupt_id 分组，与后端 ResumeRequest 对齐。 */
 export async function* resumeStream(
-  body: { sessionId: string; decisions: ResumeGroup[] },
+  body: { sessionId: string; decisions: ResumeGroup[]; mode?: string },
   opts: ChatStreamOptions
 ): AsyncGenerator<StreamEvent> {
-  yield* postStream('/chat/resume', body, opts.signal, opts.onUsage)
+  yield* postStream('/chat/resume', body, opts.signal, opts.onUsage, opts.onEventId)
 }
