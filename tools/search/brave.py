@@ -53,14 +53,22 @@ class BraveProvider(BaseSearchProvider):
             raise RuntimeError(f"Brave non-JSON response: {resp.text[:200]}")
 
         results: list[SearchResult] = []
-        # Brave 响应结构:{"web": {"results": [...]}}
+        # Brave 响应结构:{"web": {"results": [...]}}；news 时可能有 {"news": {"results": [...]}}
         web_block = data.get("web") or {}
-        for item in web_block.get("results", []) or []:
-            results.append(
-                SearchResult(
-                    title=item.get("title", "") or "",
-                    url=item.get("url", "") or "",
-                    snippet=item.get("description", "") or "",
-                )
+        news_block = data.get("news") or {}
+        items = list(web_block.get("results", []) or [])
+        if query.topic == "news" and (news_block.get("results") or []):
+            items = list(news_block.get("results") or []) + items
+        for i, item in enumerate(items):
+            age = item.get("age") or item.get("page_age") or ""
+            r = SearchResult(
+                title=item.get("title", "") or "",
+                url=item.get("url", "") or "",
+                snippet=item.get("description", "") or "",
+                provider="brave",
+                provider_rank=i,
+                published_at=str(age or ""),
             )
+            r.ensure_derived()
+            results.append(r)
         return results

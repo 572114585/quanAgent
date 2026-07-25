@@ -1,7 +1,7 @@
 ---
 name: research-strategies
 description: "检索策略手册。当需要按文档类型和深度等级调控联网搜索行为时查阅。定义产品介绍/技术调研/新闻日报/数据分析 4 种文档类型的检索策略，以及 brief/standard/in-depth 3 级深度的参数映射。供 research-agent 子 agent 和主 Agent 在检索前读取。"
-allowed-tools: read_file
+allowed-tools: read_file inspect_file check_research_material
 ---
 
 # Research Strategies 检索策略手册
@@ -14,9 +14,9 @@ allowed-tools: read_file
 
 | 等级 | 触发条件 | 目标 | 广度阶段参数 | 深度阶段参数 |
 |---|---|---|---|---|
-| brief（简报） | 用户说"简报""概览""快速了解" 或 文档类型为新闻日报 | 快、浅、覆盖面够即可 | max_results=3, fetch_top_n=0 | fetch_top_n=1, max_content_chars=2000 |
-| standard（标准） | 默认，用户未明确说明 | 适中深度 + 适中覆盖 | max_results=5, fetch_top_n=0 | fetch_top_n=2, max_content_chars=4000 |
-| in-depth（深度） | 用户说"详细""深入""全面""深度调研" 或 文档类型为技术调研/数据分析 | 慢、深、多源交叉验证 | max_results=8, fetch_top_n=0 | fetch_top_n=4, max_content_chars=200000 |
+| brief（简报） | 用户说"简报""概览""快速了解" 或 文档类型为新闻日报 | 快、浅、覆盖面够即可 | web_search max_results=3 | 抓取 top 1 URL，web_fetch max_content_chars=2000 |
+| standard（标准） | 默认，用户未明确说明 | 适中深度 + 适中覆盖 | web_search max_results=6，search_depth=basic | 抓取 top **4** URL，web_fetch max_content_chars=**12000** |
+| in-depth（深度） | 用户说"详细""深入""全面""深度调研" 或 文档类型为技术调研/数据分析 | 慢、深、多源交叉验证 | web_search max_results=**10**，search_depth=**advanced** | 抓取 top **8** URL，web_fetch max_content_chars=**24000** |
 
 > **深度判断规则**：
 > 1. 用户显式说明（"详细的""简报"）→ 按说明走
@@ -37,21 +37,20 @@ allowed-tools: read_file
 ```
 阶段 1：广度撒网（breadth）
   - 目标：快速判断"有哪些相关内容"，不抓正文
-  - 方法：多关键词（3-5 组），每组 web_search(fetch_top_n=0)
+  - 方法：多关键词（3-5 组），每组 web_search(max_results=按策略, save_to=..., phase="广度")
   - 产出：标题+摘要列表，按相关性筛选出 top N 个 URL
   - 判断：哪些 URL 值得深入抓取？
 
 阶段 2：深度钻取（depth）
   - 目标：对阶段 1 筛选出的 URL 抓取全文
-  - 方法：web_search(fetch_top_n=N, max_content_chars=M)
-    或换更精准的关键词重新搜索并抓全文
+  - 方法：对每个 URL 调用 web_fetch(url, max_content_chars=M, save_to=..., phase="深度")
   - 产出：带全文正文的结构化素材
 ```
 
 ### 为什么分两阶段？
 
-- **省额度**：广度阶段不抓正文（fetch_top_n=0），只用摘要快速判断相关性，避免对无关结果浪费抓取。
-- **提质量**：深度阶段只对筛选后的高相关 URL 抓全文，抓取的每篇都是有价值的。
+- **省额度**：广度阶段只用 web_search 摘要快速判断相关性，避免对无关结果浪费抓取。
+- **提质量**：深度阶段只对筛选后的高相关 URL 调 web_fetch，抓取的每篇都是有价值的。
 - **参考 GPT Researcher 模式**：先广度撒网定位，再深度钻取细节。
 
 ## D. 使用指引（给 research-agent 子 agent）
@@ -61,22 +60,26 @@ allowed-tools: read_file
    （主 Agent 会在 task() 的 description 里告知，如"tech_research in-depth: 调研 AI Agent 技术原理"）
 2. 读本 SKILL.md 确认对应策略的参数和来源偏好
 3. 执行两阶段搜索：
-   - 阶段 1：按策略广度参数搜 3-5 组关键词，fetch_top_n=0
+   - 阶段 1：按策略广度参数搜 3-5 组关键词（web_search，不抓正文）
    - 筛选相关 URL（看标题和摘要，判断哪些值得深入）
-   - 阶段 2：按策略深度参数抓取筛选后 URL 的全文
-4. 把发现写入 /tmp/research/<主题>.md（含来源、日期、阶段标记）
+   - 阶段 2：按策略深度参数，对筛选后 URL 逐个 web_fetch
+4. 把发现写入 /tmp/research/<主题>.md（含来源、日期、阶段标记；用 save_to 自动写入）
 5. 返回摘要 + 文件路径
 ```
 
 ## E. 主 Agent Review 检查清单
 
-research-agent 返回后，主 Agent 对照以下维度审查：
+research-agent 返回后，主 Agent **必须先调用
+`check_research_material(path, depth)` 做硬指标校验，再用 `read_file` 抽查正文**，
+对照以下维度审查。禁止用 `grep`、`wc`、`python -c` 或 PowerShell 手工拼统计：
 
 | 维度 | 检查内容 | 不通过时的动作 |
 |---|---|---|
+| **全文落盘（硬）** | 文件是否含 `## 抓取记录`？深度段单条字数是否接近策略下限（standard≥约 3k / in-depth≥约 5k，允许截断标记）？ | **必须**再派一轮；禁止用自写要点笔记冒充素材 |
 | 覆盖度 | 策略要求的关键词/维度都搜了吗？ | 再派一轮，指明缺失方向 |
 | 相关性 | 结果和主题相关吗？有跑偏吗？ | 再派一轮，调整关键词 |
 | 来源质量 | 权威来源占比够吗？ | 再派一轮，指定来源类型 |
-| 数量 | 结果条数达到策略要求了吗？ | 再派一轮，扩大关键词范围 |
+| 数量 | 深度抓取 URL 数是否达到策略 top N？ | 再派一轮，扩大关键词范围 |
 
 > 最多补检 2 轮。仍不够则在结果中标注"信息不足"并继续后续流程。
+> **严禁**：把 web_fetch 返回的「结构化摘要」再 write_file 成 `/tmp/research/*.md` 正文；正文只能来自 `save_to` 自动追加的抓取记录。

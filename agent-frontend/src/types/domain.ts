@@ -28,12 +28,40 @@ export interface ToolCallRequest {
   name: string
   args?: string | Record<string, any>
   description?: string
+  /** 与后端 pending 动作一致的摘要，approve 时必须回传 */
+  actionHash?: string
+  /** 为何需要审批（来自 execute_policy） */
+  riskNote?: string
+  riskReason?: string
 }
 
-/** HITL 中断分组：一个 interrupt_id 下可能含多个并发工具调用 */
+/** ask_user_question 单题 */
+export interface AskUserQuestionItem {
+  id: string
+  prompt: string
+  options?: string[] | null
+  allowMultiple?: boolean
+  allowFreeText?: boolean
+}
+
+/** 用户对单题的回答 */
+export interface AskUserAnswer {
+  questionId: string
+  selected: string[]
+  text: string
+}
+
+export type InterruptKind = 'tool_approval' | 'ask_user_question'
+
+/** HITL 中断分组：一个 interrupt_id 下可能含多个并发工具调用，或一份问卷 */
 export interface InterruptGroup {
   interruptId: string
-  toolCalls: ToolCallRequest[]
+  kind?: InterruptKind
+  toolCalls?: ToolCallRequest[]
+  title?: string
+  questions?: AskUserQuestionItem[]
+  /** 组级 hash（通常等于首个 toolCall 的 actionHash） */
+  actionHash?: string
 }
 
 /** 单个工具调用的批准/拒绝决定 */
@@ -42,7 +70,11 @@ export type ResumeDecision = { type: 'approve' | 'reject' }
 /** 恢复请求里按 interrupt_id 分组的决定 */
 export interface ResumeGroup {
   interruptId: string
-  decisions: ResumeDecision[]
+  kind?: InterruptKind
+  decisions?: ResumeDecision[]
+  answers?: AskUserAnswer[]
+  /** 批准时必填，与 pending 动作绑定 */
+  actionHash?: string
 }
 
 /** 思考过程中产生的工具调用记录（与最终答案 content 解耦） */
@@ -75,6 +107,14 @@ export interface KbReference {
   chunkId: string
 }
 
+/** 联网引用来源（从 web_search / web_fetch 的 <!--WEB_REFS:...--> 元数据） */
+export interface WebReference {
+  title: string
+  url: string
+  snippet: string
+  provider?: string
+}
+
 export interface Message {
   id: string
   sessionId: string
@@ -97,6 +137,8 @@ export interface Message {
   usage?: { prompt: number; completion: number }
   /** 知识库引用来源（从 research-agent 的 kb_search 结果解析）—— 渲染在最终答案下方的专属面板 */
   kbReferences?: KbReference[]
+  /** 联网引用来源（从 research-agent 的 web_search / web_fetch 结果解析） */
+  webReferences?: WebReference[]
 }
 
 export interface Session {
@@ -108,10 +150,15 @@ export interface Session {
   messageCount: number
 }
 
+/** agent=可执行；plan=只规划不写/不 shell */
+export type AgentMode = 'agent' | 'plan'
+
 export interface ChatRequest {
   sessionId: string
   message: string
   attachments?: Array<{ id: string; remoteUrl: string; name: string; mime: string; size: number }>
+  /** 可选；空则后端用 AGENT_MODE 默认值 */
+  mode?: AgentMode
 }
 
 export interface ArtifactFile {
@@ -160,7 +207,14 @@ export interface SubagentTask {
   steps: SubagentStep[]
 }
 
-export type StreamEvent =
+/** schemaVersion 2：公共字段 runId/eventId；未知字段应忽略以保持兼容 */
+type StreamEventBase = {
+  runId?: string
+  eventId?: string
+  schemaVersion?: number
+}
+
+export type StreamEvent = StreamEventBase & (
   | { type: 'start'; messageId: string }
   /** 最终答案的 token 增量 —— 进入 message.content */
   | { type: 'delta'; delta: string }
@@ -171,7 +225,8 @@ export type StreamEvent =
   /** 工具开始调用 —— 新增：与最终答案解耦，进入 message.toolCalls（subagentId 非空=子智能体内部步骤） */
   | { type: 'tool_call'; callId: string; name: string; args?: string | Record<string, any>; subagentId?: string }
   /** 工具执行完成 —— 新增：补全对应 callId 的 output / status（subagentId 非空=子智能体内部步骤） */
-  | { type: 'tool_result'; callId: string; name: string; output?: string; error?: string; subagentId?: string }
+  | { type: 'tool_result'; callId: string; name: string; output?: string; error?: string; subagentId?: string; denied?: boolean }
+  | { type: 'done'; messageId: string }
   /** 子智能体 task() 启动 —— 进入任务进度区的"子智能体"分区 */
   | { type: 'subagent_start'; subagentId: string; subagentType: string; description: string }
   /** 子智能体 task() 结束 —— 把对应卡片置为已完成 */
@@ -181,6 +236,6 @@ export type StreamEvent =
   | { type: 'interrupt'; groups: InterruptGroup[] }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
   | { type: 'artifact'; name: string; path: string; url: string; mime: string; size: number }
-  | { type: 'done'; messageId: string }
-  | { type: 'error'; message: string }
+  | { type: 'error'; message: string; activeRunId?: string }
   | { type: 'ping'; ts: number }
+)

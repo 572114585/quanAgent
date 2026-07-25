@@ -4,9 +4,14 @@
 （_ShellWhitelistFilter 类）+ L1296-1302（backend 单例组装）拆出。
 
 _SkillsShellBackend（内层）只做路径改写与编码兼容，不做命令形态拦截；本模块
-的 _ShellWhitelistFilter（外层）负责：命令替换语法拦截、白名单 head 校验、
-python -c / bash -c 内联代码拦截、cd 越界拦截、curl host 白名单拦截。放行后
-转内层 backend 执行。
+的 _ShellWhitelistFilter（外层）负责：
+
+- 硬拒绝（永不绕过）：命令替换、$()/``、cd 越界、极危险模式
+- 软拒绝（HITL 批准 / always-approve 可绕过）：白名单 head、python/bash -c、
+  skill 脚本白名单、curl host、内联 env 赋值
+
+HITL 批准语义对齐 grok-build：用户同意后应能执行；沙盒只保留爆炸半径约束。
+信任级别经 sandbox.trust ContextVar 传递。
 
 模块级 `backend` 单例由两层组装而成，供 agent_core.runtime.build_agent() 使用。
 """
@@ -22,6 +27,7 @@ from sandbox.backend import _SkillsShellBackend
 from sandbox.constants import (
     _CD_PATTERN,
     _COMMAND_SUBSTITUTION_PATTERN,
+    _HARD_DENY_PATTERNS,
     DEFAULT_ALLOWED_COMMANDS,
     _NODE_BUILD_COMMANDS,
     _PYTHON_BLOCKED_OPTIONS,
@@ -43,13 +49,32 @@ from sandbox.path_rewriter import (
     _to_posix,
     _tokens_after_env_assignments,
 )
+from sandbox.trust import TrustLevel, get_execute_trust_level
 
 logger = logging.getLogger(__name__)
+
+
+def _should_skip_soft(command: str, level: TrustLevel) -> bool:
+    """HITL 批准或 workspace_auto 分类为 auto 时跳过软白名单。"""
+    if level == "hitl_approved":
+        return True
+    try:
+        from agent_core.execute_policy import classify_for_profile
+
+        return classify_for_profile(command).effect == "auto"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _build_rejection_response(reason: str, command_head: str | None = None) -> ExecuteResponse:
     if reason == "command_substitution":
         output = f"{_SHELL_DENIED_MARKER} 命令含有命令替换语法（反引号或 $()），已被安全策略拦截。"
+    elif reason == "hard_deny":
+        output = (
+            f"{_SHELL_DENIED_MARKER} 命令命中硬拒绝策略（极危险操作），"
+            "即使 HITL 批准也无法执行。"
+            + (f" 相关片段：`{command_head}`。" if command_head else "")
+        )
     elif reason == "env_assignment":
         output = f"{_SHELL_DENIED_MARKER} 命令含有内联环境变量赋值，已被安全策略拦截。"
     elif reason == "cwd_out_of_sandbox":
@@ -90,6 +115,7 @@ def _build_rejection_response(reason: str, command_head: str | None = None) -> E
             f"{_SHELL_DENIED_MARKER} 命令 `{command_head}` 不在白名单内，已被拦截。"
             "允许的命令：python/ls/dir/cat/type/head/tail/find/pwd/test/echo/"
             "cd/pushd/popd/chdir/npm/npx/node/bash/sh/jq/curl/zip。"
+            "若需执行，请在 HITL 中批准（批准后可绕过软白名单）。"
         )
     else:
         output = f"{_SHELL_DENIED_MARKER} 命令未通过安全校验，已被拦截。"
@@ -97,11 +123,9 @@ def _build_rejection_response(reason: str, command_head: str | None = None) -> E
 
 
 class _ShellWhitelistFilter(SandboxBackendProtocol):
-    """白名单安全包装：拦截命令替换/python -c/cd 越界/非白名单命令，放行后转内层。
+    """白名单安全包装：硬拒绝 + 可选软白名单，放行后转内层。
 
-    与 lesso 的 ShellCommandFilterMiddleware 的区别：
-    - 去掉 skill 绑定、文件工具路径白名单、curl 联网策略（个人助手不需要）；
-    - 保留命令替换拦截、白名单 head 校验、python -c 拦截、cd 沙箱。
+    trust_level=hitl_approved 时跳过软限制（对齐 grok-build：批准即可执行）。
     """
 
     def __init__(
@@ -154,6 +178,16 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
     def download_files(self, paths):
         return self._backend.download_files(paths)
 
+    def inspect_file(self, file_path, *, tail_lines=0, count_literals=None):
+        return self._backend.inspect_file(
+            file_path,
+            tail_lines=tail_lines,
+            count_literals=count_literals,
+        )
+
+    def replace_file(self, file_path, content):
+        return self._backend.replace_file(file_path, content)
+
     async def aread(self, file_path, offset=0, limit=2000):
         return await self._backend.aread(file_path, offset=offset, limit=limit)
 
@@ -178,17 +212,51 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
     async def adownload_files(self, paths):
         return await self._backend.adownload_files(paths)
 
-    # ----------------------------- shell -----------------------------
-    def _reject_if_disallowed(self, command) -> ExecuteResponse | None:
-        if not isinstance(command, str) or not command.strip():
-            return None
+    async def ainspect_file(self, file_path, *, tail_lines=0, count_literals=None):
+        return await self._backend.ainspect_file(
+            file_path,
+            tail_lines=tail_lines,
+            count_literals=count_literals,
+        )
 
-        # 1. 命令替换语法拦截
+    async def areplace_file(self, file_path, content):
+        return await self._backend.areplace_file(file_path, content)
+
+    # ----------------------------- shell -----------------------------
+    def _hard_reject(self, command: str) -> ExecuteResponse | None:
+        """永不绕过的硬拒绝：命令替换、极危险模式、cd 越界。"""
         if _COMMAND_SUBSTITUTION_PATTERN.search(command):
             logger.warning("[shell_filter] 命令含命令替换语法被拒绝")
             return _build_rejection_response(reason="command_substitution")
 
-        # 2. 逐段校验 head
+        for pattern in _HARD_DENY_PATTERNS:
+            m = pattern.search(command)
+            if m:
+                snippet = m.group(0)[:80]
+                logger.warning("[shell_filter] 硬拒绝危险命令: %s", snippet)
+                return _build_rejection_response(reason="hard_deny", command_head=snippet)
+
+        if self._skills_root:
+            for cd_match in _CD_PATTERN.finditer(command):
+                target = cd_match.group("target").strip().strip('"').strip("'")
+                if not target:
+                    continue
+                root_posix = _to_posix(str(self._skills_root))
+                root_win = str(self._skills_root)
+                rewritten = _rewrite_path_token(target, root_posix, root_win)
+                check_target = rewritten if rewritten is not None else target
+                if not _path_stays_within_root(check_target, self._skills_root):
+                    logger.warning(
+                        "[shell_filter] cd 越界拒绝: target=%s, root=%s",
+                        target, self._skills_root,
+                    )
+                    return _build_rejection_response(
+                        reason="cwd_out_of_sandbox", command_head=target
+                    )
+        return None
+
+    def _soft_reject(self, command: str) -> ExecuteResponse | None:
+        """软白名单：HITL 批准 / always-approve 时可绕过。"""
         for segment in _split_into_segments(command):
             raw_tokens = _split_segment_tokens(segment)
             tokens = _tokens_after_env_assignments(list(raw_tokens))
@@ -207,16 +275,12 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
                     if tok in _PYTHON_BLOCKED_OPTIONS:
                         logger.warning("[shell_filter] python 危险选项被拒绝: %s", tok)
                         return _build_rejection_response(reason="python_unsafe", command_head=tok)
-                # python 脚本白名单：第一个位置参数（脚本路径）必须在 skills 白名单内。
-                # 路径先经 _rewrite_path_token 规范化（处理 /skills/...、D:\skills\...、
-                # skills/... 等变形），再比对白名单集合，避免变形绕过。
                 positional = _extract_python_positional(segment)
                 if positional is not None and self._skill_scripts:
                     root_posix = _to_posix(str(self._skills_root))
                     root_win = str(self._skills_root)
                     rewritten = _rewrite_path_token(positional, root_posix, root_win)
                     candidate = rewritten if rewritten is not None else positional
-                    # candidate 可能含反斜杠，统一成 POSIX 比对
                     candidate_norm = _to_posix(candidate)
                     if candidate_norm not in self._skill_scripts:
                         logger.warning(
@@ -227,14 +291,11 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
                             reason="python_script_not_allowed", command_head=positional,
                         )
 
-            # bash/sh -c/-s 拦截（内联代码风险，仿 python -c 拦截）
             if head in {"bash", "sh"}:
                 for tok in tokens[1:]:
                     if tok in {"-c", "-s"}:
                         logger.warning("[shell_filter] bash/sh 危险选项被拒绝: %s", tok)
                         return _build_rejection_response(reason="bash_unsafe", command_head=tok)
-                # bash/sh 脚本白名单：第一个位置参数（脚本路径）必须在 skills 白名单内。
-                # 路径规范化逻辑与 python 分支一致。
                 positional = _extract_bash_positional(segment)
                 if positional is not None and self._skill_scripts:
                     root_posix = _to_posix(str(self._skills_root))
@@ -251,7 +312,6 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
                             reason="bash_script_not_allowed", command_head=positional,
                         )
 
-            # curl host 白名单拦截：只放行 _CURL_ALLOWED_HOSTS 中的 host
             if head == "curl":
                 urls = _extract_curl_urls(segment)
                 allowed, denied_url = _curl_urls_allowed(urls)
@@ -262,25 +322,42 @@ class _ShellWhitelistFilter(SandboxBackendProtocol):
                     return _build_rejection_response(
                         reason="curl_host_denied", command_head=denied_url,
                     )
-
-        # 3. cd/pushd/chdir 目标越界拦截（路径改写后再校验）
-        if self._skills_root:
-            for cd_match in _CD_PATTERN.finditer(command):
-                target = cd_match.group("target").strip().strip('"').strip("'")
-                if not target:
-                    continue
-                # 先做路径改写再判越界（与内层 _normalize_command_paths 一致）
-                root_posix = _to_posix(str(self._skills_root))
-                root_win = str(self._skills_root)
-                rewritten = _rewrite_path_token(target, root_posix, root_win)
-                check_target = rewritten if rewritten is not None else target
-                if not _path_stays_within_root(check_target, self._skills_root):
-                    logger.warning(
-                        "[shell_filter] cd 越界拒绝: target=%s, root=%s",
-                        target, self._skills_root,
-                    )
-                    return _build_rejection_response(reason="cwd_out_of_sandbox", command_head=target)
         return None
+
+    def _reject_if_disallowed(
+        self,
+        command: str,
+        *,
+        trust_level: TrustLevel | None = None,
+    ) -> ExecuteResponse | None:
+        if not isinstance(command, str) or not command.strip():
+            return None
+
+        level: TrustLevel = trust_level if trust_level is not None else get_execute_trust_level()
+
+        hard = self._hard_reject(command)
+        if hard is not None:
+            logger.warning(
+                "[shell_filter] hard_reject trust=%s cmd=%s",
+                level,
+                command[:80],
+            )
+            return hard
+        if _should_skip_soft(command, level):
+            logger.info(
+                "[shell_filter] soft_skip trust=%s cmd=%s",
+                level,
+                command[:80],
+            )
+            return None
+        soft = self._soft_reject(command)
+        if soft is not None:
+            logger.warning(
+                "[shell_filter] soft_reject trust=%s cmd=%s",
+                level,
+                command[:80],
+            )
+        return soft
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         rejection = self._reject_if_disallowed(command)

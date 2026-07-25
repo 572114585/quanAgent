@@ -29,13 +29,16 @@ class TavilyProvider(BaseSearchProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        depth = (query.search_depth or "basic").strip().lower()
+        if depth not in ("basic", "advanced"):
+            depth = "basic"
         body = {
             "query": query.query,
             "max_results": query.max_results,
-            "search_depth": "basic",
+            "search_depth": depth,
             "topic": query.topic,  # "general" | "news"
             "include_answer": False,
-            "include_raw_content": False,  # 省额度,正文由 web_search 入口层自己抓
+            "include_raw_content": False,  # 省额度,正文由 web_fetch + save_to 落盘
         }
         async with httpx.AsyncClient(timeout=_TAVILY_TIMEOUT) as client:
             resp = await client.post(_TAVILY_URL, headers=headers, json=body)
@@ -64,12 +67,15 @@ class TavilyProvider(BaseSearchProvider):
         resp.raise_for_status()
 
         results: list[SearchResult] = []
-        for item in data.get("results", []) or []:
-            results.append(
-                SearchResult(
-                    title=item.get("title", "") or "",
-                    url=item.get("url", "") or "",
-                    snippet=item.get("content", "") or "",
-                )
+        for i, item in enumerate(data.get("results", []) or []):
+            r = SearchResult(
+                title=item.get("title", "") or "",
+                url=item.get("url", "") or "",
+                snippet=item.get("content", "") or "",
+                provider="tavily",
+                provider_rank=i,
+                published_at=str(item.get("published_date") or item.get("published_at") or ""),
             )
+            r.ensure_derived()
+            results.append(r)
         return results

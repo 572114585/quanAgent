@@ -47,10 +47,10 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -64,12 +64,22 @@ load_dotenv()
 
 from agent_core import build_agent  # noqa: E402
 from agent_core.config import (  # noqa: E402
+    AGENT_API_TOKEN,
+    AGENT_MODE_DEFAULT,
+    AGENT_RECURSION_LIMIT,
+    AGENT_RUN_DEADLINE_SECONDS,
+    ALLOWED_ORIGINS,
     HITL_ENABLED_DEFAULT as HITL_ENABLED,
     LOG_LEVEL,
     MAX_UPLOAD_SIZE,
     OUTPUT_DIR,
     UPLOADS_DIR,
+    WEB_HOST_DEFAULT,
 )
+from agent_core.event_log import get_event_log  # noqa: E402
+from agent_core.events import SCHEMA_VERSION, make_event, make_event_id  # noqa: E402
+from agent_core.permissions import AgentMode  # noqa: E402
+from agent_core.run_registry import RunConflictError, get_run_registry  # noqa: E402
 from agent_core.runtime import get_checkpointer  # noqa: E402
 from artifacts import detect_new_artifacts, snapshot_output_dir  # noqa: E402
 
@@ -90,55 +100,103 @@ logging.basicConfig(
 logger = logging.getLogger("agent-web")
 
 
-# === Agent 单例（与 agent_core.agent 同配置，但 HITL 开关独立） ===
+# === Agent 按 mode 缓存（agent / plan 各一个单例） ===
 # uvicorn 在单 event loop 内并发多请求，首请求初始化期间若无锁，
-# 并发的第二个请求会重复进入初始化分支，创建多个 agent 并覆盖单例。
-# 用 asyncio.Lock 保护：首个协程持锁初始化，其余等待。
-_agent_singleton: object | None = None
+# 并发的第二个请求会重复进入初始化分支。用 asyncio.Lock 保护。
+_agent_by_mode: dict[str, object] = {}
 _agent_init_error: str | None = None
 _agent_init_lock = asyncio.Lock()
 
 
-async def get_agent() -> object:
-    """懒加载 + 单例（asyncio.Lock 保护并发）。初始化失败时持久化错误状态，避免每次请求都重试。"""
-    global _agent_singleton, _agent_init_error
+def _normalize_mode(mode: str | None) -> AgentMode:
+    m = (mode or AGENT_MODE_DEFAULT or "agent").strip().lower()
+    return "plan" if m == "plan" else "agent"
 
-    # 失败后不再重试：直接返回持久化错误
+
+async def get_agent(mode: str | None = None) -> object:
+    """懒加载 + 按 mode 单例。初始化失败时持久化错误状态，避免每次请求都重试。"""
+    global _agent_init_error
+    resolved = _normalize_mode(mode)
+
     if _agent_init_error is not None:
         raise RuntimeError(f"Agent initialization failed: {_agent_init_error}")
 
-    if _agent_singleton is not None:
-        return _agent_singleton
+    cached = _agent_by_mode.get(resolved)
+    if cached is not None:
+        return cached
 
     async with _agent_init_lock:
-        # 双检：持锁后可能已有协程完成初始化
         if _agent_init_error is not None:
             raise RuntimeError(f"Agent initialization failed: {_agent_init_error}")
-        if _agent_singleton is not None:
-            return _agent_singleton
+        cached = _agent_by_mode.get(resolved)
+        if cached is not None:
+            return cached
 
         try:
-            agent = build_agent(hitl=HITL_ENABLED)
-            _agent_singleton = agent
-            logger.info("Agent initialized (hitl=%s)", HITL_ENABLED)
+            # plan 模式无 HITL（写/execute 由 Hooks deny）；agent 模式跟随 HITL_ENABLED
+            hitl = bool(HITL_ENABLED) if resolved == "agent" else False
+            agent = build_agent(hitl=hitl, mode=resolved, entrypoint="web")
+            _agent_by_mode[resolved] = agent
+            logger.info(
+                "Agent initialized (mode=%s hitl=%s schemaVersion=%s)",
+                resolved,
+                hitl,
+                SCHEMA_VERSION,
+            )
         except Exception as e:
             error_msg = str(e)
             _agent_init_error = error_msg
             logger.error("Agent initialization failed, error persisted: %s", error_msg)
             raise RuntimeError(f"Agent initialization failed: {error_msg}") from e
 
-    return _agent_singleton
+    return _agent_by_mode[resolved]
 
 
 # === FastAPI 应用 ===
 app = FastAPI(title="Agent Web Bridge", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev only
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+def is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower().split("%", 1)[0]
+    return h in ("127.0.0.1", "localhost", "::1")
+
+
+def check_bearer_auth(authorization: str | None, expected_token: str) -> bool:
+    """校验 Authorization: Bearer <token>。expected_token 为空时视为不强制鉴权。"""
+    token = (expected_token or "").strip()
+    if not token:
+        return True
+    auth = (authorization or "").strip()
+    return auth == f"Bearer {token}"
+
+
+@app.middleware("http")
+async def bearer_auth_middleware(request: Request, call_next):
+    """保护对话、上传与静态产物；/health 放行。"""
+    path = request.url.path
+    if path == "/health" or path == "/docs" or path == "/openapi.json" or path == "/redoc":
+        return await call_next(request)
+    protected = (
+        path.startswith("/chat")
+        or path.startswith("/uploads")
+        or path.startswith("/output")
+        or path == "/upload"
+    )
+    # 运行时读 env，便于测试 monkeypatch 与热更新
+    expected = os.getenv("AGENT_API_TOKEN", AGENT_API_TOKEN).strip()
+    if protected and not check_bearer_auth(
+        request.headers.get("Authorization"), expected
+    ):
+        return JSONResponse(status_code=401, content={"message": "Unauthorized"})
+    return await call_next(request)
+
 
 # === 静态文件目录（uploads 和 output 产物） ===
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -160,6 +218,10 @@ class ChatRequest(BaseModel):
     sessionId: str = Field(..., description="前端 session id，作为 langgraph thread_id")
     message: str = ""
     attachments: list[Attachment] = []
+    mode: str = Field(
+        default="",
+        description='agent | plan；空则用服务端 AGENT_MODE 默认值',
+    )
 
 
 class ResumeRequest(BaseModel):
@@ -167,9 +229,19 @@ class ResumeRequest(BaseModel):
     # 每个 interrupt 一组决定，与 interrupt 事件的 groups 一一对应。
     # LangGraph 多 interrupt 恢复必须按 interrupt_id 索引：
     # https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
+    # tool_approval: {interruptId, kind?, decisions: [{type}]}
+    # ask_user_question: {interruptId, kind, answers: [{questionId, selected, text}]}
     decisions: list[dict] = Field(
         ...,
-        description='[{"interruptId": "...", "decisions": [{"type": "approve" | "reject"}, ...]}, ...]',
+        description=(
+            '[{"interruptId": "...", "kind": "tool_approval"|"ask_user_question", '
+            '"decisions": [{"type": "approve"|"reject"}], '
+            '"answers": [{"questionId": "...", "selected": [...], "text": "..."}]}]'
+        ),
+    )
+    mode: str = Field(
+        default="",
+        description="与发起 chat 时的 mode 保持一致；空则默认 agent",
     )
 
 
@@ -180,12 +252,36 @@ def _get_local_path(remote_url: str) -> str:
     return remote_url.lstrip("/") if remote_url.startswith("/") else remote_url
 
 
-def _build_attachment_context(attachments: list[Attachment]) -> str:
-    """将所有附件信息构建为给 agent 的提示上下文。
+def _build_doc_attachment_context(docs: list[Attachment]) -> str:
+    """文档附件：路径 + mineru 解析提示（与是否 vision 无关）。"""
+    if not docs:
+        return ""
+    lines = [
+        "",
+        "以下文档文件已上传到本地，你可以使用 mineru skill 解析这些文档：",
+        "",
+    ]
+    for doc in docs:
+        size_kb = doc.size / 1024 if doc.size else 0
+        local_path = _get_local_path(doc.remoteUrl)
+        lines.append(f"- 📄 **{doc.name}**（{doc.mime}, {size_kb:.1f} KB）：`{local_path}`")
+    lines.extend(
+        [
+            "",
+            "解析文档的方法：使用 execute 工具运行 mineru skill 的 extract.py 脚本。",
+            "示例命令：",
+            "```",
+            f"python skills/mineru/scripts/extract.py {_get_local_path(docs[0].remoteUrl)} -o output/parsed.md",
+            "```",
+            "解析完成后，读取 output/parsed.md 即可获取文档内容，再据此回答用户问题。",
+            "如果用户的消息为空或仅要求解析/总结文档，请先执行解析，再根据解析结果作答。",
+        ]
+    )
+    return "\n".join(lines)
 
-    图片和文档统一处理：告知 agent 文件路径和可用的工具。
-    当前 LLM 不支持多模态 vision，图片无法直接"看见"，需告知用户限制。
-    """
+
+def _build_attachment_context(attachments: list[Attachment]) -> str:
+    """非 vision 模式：图片仅给路径提示；文档给 mineru 提示。"""
     if not attachments:
         return ""
 
@@ -196,42 +292,137 @@ def _build_attachment_context(attachments: list[Attachment]) -> str:
 
     if images:
         lines.append("")
-        lines.append(f"用户上传了 {len(images)} 张图片（当前模型不支持图片视觉识别，无法直接查看图片内容）：")
+        lines.append(
+            f"用户上传了 {len(images)} 张图片（当前模型不支持图片视觉识别，无法直接查看图片内容）："
+        )
         lines.append("")
         for img in images:
             size_kb = img.size / 1024 if img.size else 0
             local_path = _get_local_path(img.remoteUrl)
-            lines.append(f"- 🖼️ **{img.name}**（{img.mime}, {size_kb:.1f} KB）：`{local_path}`")
+            lines.append(
+                f"- 🖼️ **{img.name}**（{img.mime}, {size_kb:.1f} KB）：`{local_path}`"
+            )
         lines.append("")
-        lines.append("提示：如果用户要求识别图片内容，请告知当前模型不支持图片视觉理解，建议用户描述图片内容或使用支持 vision 的模型。")
+        lines.append(
+            "提示：如果用户要求识别图片内容，请告知当前模型不支持图片视觉理解，"
+            "建议用户描述图片内容，或切换 LLM_PROVIDER=siliconflow / 设置 LLM_SUPPORTS_VISION=true。"
+        )
 
-    if docs:
+    doc_block = _build_doc_attachment_context(docs)
+    if doc_block:
         if images:
             lines.append("")
-        lines.append("以下文档文件已上传到本地，你可以使用 mineru skill 解析这些文档：")
-        lines.append("")
-        for doc in docs:
-            size_kb = doc.size / 1024 if doc.size else 0
-            local_path = _get_local_path(doc.remoteUrl)
-            lines.append(f"- 📄 **{doc.name}**（{doc.mime}, {size_kb:.1f} KB）：`{local_path}`")
-        lines.append("")
-        lines.append("解析文档的方法：使用 execute 工具运行 mineru skill 的 extract.py 脚本。")
-        lines.append("示例命令：")
-        lines.append("```")
-        lines.append(f"python skills/mineru/scripts/extract.py {_get_local_path(docs[0].remoteUrl)} -o output/parsed.md")
-        lines.append("```")
-        lines.append("解析完成后，读取 output/parsed.md 即可获取文档内容，再据此回答用户问题。")
-        lines.append("如果用户的消息为空或仅要求解析/总结文档，请先执行解析，再根据解析结果作答。")
+        lines.append(doc_block.lstrip("\n"))
 
     return "\n".join(lines)
 
 
+def _build_chat_user_content(
+    message: str,
+    attachments: list[Attachment],
+) -> str | list[dict]:
+    """按当前 LLM vision 能力组装 user content（多模态或纯文本）。"""
+    from agent_core.config import WORKSPACE_ROOT
+    from agent_core.llm import llm_supports_vision
+    from agent_core.multimodal import to_image_part
+
+    images = [a for a in attachments if a.mime.startswith("image/")]
+    docs = [a for a in attachments if not a.mime.startswith("image/")]
+    doc_ctx = _build_doc_attachment_context(docs)
+    text = (message or "") + (f"\n\n---\n## 用户上传的附件\n{doc_ctx}" if doc_ctx else "")
+
+    if not images:
+        if not attachments:
+            return message
+        # 仅文档：走原文本上下文（含 mineru 提示）
+        return message + _build_attachment_context(attachments) if docs else message
+
+    if not llm_supports_vision():
+        return message + _build_attachment_context(attachments)
+
+    # vision：图片进 image_url；仍附路径说明便于 agent 写文件工具
+    path_notes = []
+    for img in images:
+        local_path = _get_local_path(img.remoteUrl)
+        path_notes.append(f"- `{local_path}`（{img.name}, {img.mime}）")
+    vision_text = text or "(见附图)"
+    vision_text += (
+        "\n\n---\n## 用户上传的图片（已作为视觉输入，路径如下供文件操作使用）\n"
+        + "\n".join(path_notes)
+    )
+
+    parts: list[dict] = []
+    for img in images:
+        local_path = _get_local_path(img.remoteUrl)
+        abs_path = WORKSPACE_ROOT / local_path
+        try:
+            parts.append(to_image_part(abs_path, mime=img.mime or None))
+        except (OSError, ValueError, FileNotFoundError):
+            # 单张失败时降级为路径提示，不阻断整轮
+            vision_text += f"\n\n（无法加载图片字节: `{local_path}`，请用 view_image 重试）"
+    parts.append({"type": "text", "text": vision_text})
+    if len(parts) == 1:
+        # 全部图片加载失败 → 退回文本模式
+        return message + _build_attachment_context(attachments)
+    return parts
+
+
+class CancelRequest(BaseModel):
+    sessionId: str
+    runId: str | None = None
+
+
 # === SSE 工具 ===
-def _sse(payload: dict) -> dict:
+class StreamEmitter:
+    """为单次 run 分配单调 eventId，写入 EventLog，并产出带 SSE id 的帧。"""
+
+    def __init__(self, *, thread_id: str, run_id: str, message_id: str):
+        self.thread_id = thread_id
+        self.run_id = run_id
+        self.message_id = message_id
+        self.seq = 0
+        self._log = get_event_log()
+
+    def emit(self, payload: dict) -> dict:
+        self.seq += 1
+        event_type = payload.get("type", "")
+        fields = {k: v for k, v in payload.items() if k != "type"}
+        fields.setdefault("messageId", self.message_id)
+        body = make_event(
+            event_type,
+            run_id=self.run_id,
+            seq=self.seq,
+            **fields,
+        )
+        event_id = str(body.get("eventId") or make_event_id(self.run_id, self.seq))
+        try:
+            self._log.append(
+                thread_id=self.thread_id,
+                run_id=self.run_id,
+                seq=self.seq,
+                event_type=event_type,
+                payload=body,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("event_log.append failed eventId=%s", event_id)
+        return {
+            "id": event_id,
+            "event": "message",
+            "data": json.dumps(body, ensure_ascii=False),
+        }
+
+
+def _sse(payload: dict, emitter: StreamEmitter | None = None) -> dict:
+    """把业务事件 dict 包成 sse-starlette 帧。有 emitter 时走 run 协议。"""
+    if emitter is not None:
+        return emitter.emit(payload)
+    event_type = payload.get("type", "")
+    if event_type in ("start", "done") and "schemaVersion" not in payload:
+        payload = make_event(event_type, **{k: v for k, v in payload.items() if k != "type"})
     return {"event": "message", "data": json.dumps(payload, ensure_ascii=False)}
 
 
-def _open_langfuse_trace(session_id: str, run_name: str):
+def _open_langfuse_trace(session_id: str, run_name: str, *, run_id: str | None = None):
     """为本次请求开一个 langfuse 根 trace，返回 (config, trace_context_or_None)。
 
     关键点：langfuse v4 的 CallbackHandler 默认会把每个 langchain/langgraph 顶层
@@ -248,11 +439,13 @@ def _open_langfuse_trace(session_id: str, run_name: str):
     cfg: dict = {
         "configurable": {"thread_id": session_id},
         "run_name": run_name,
+        "recursion_limit": AGENT_RECURSION_LIMIT,
         # 同一会话的多次请求（含 HITL resume）通过 langfuse_session_id 归并到
         # langfuse UI 的同一个 session 视图。
         "metadata": {
             "langfuse_session_id": session_id,
             "langfuse_tags": ["deepagents", "web"],
+            "run_id": run_id or "",
         },
     }
     if not _langfuse_available:
@@ -269,7 +462,11 @@ def _open_langfuse_trace(session_id: str, run_name: str):
     obs = client.start_observation(
         name=run_name,
         as_type="span",
-        metadata={"session_id": session_id, "tags": ["deepagents", "web"]},
+        metadata={
+            "session_id": session_id,
+            "tags": ["deepagents", "web"],
+            "run_id": run_id or "",
+        },
     )
     trace_id = obs.trace_id
     # 立刻 end 这个空根：真正的事件由 CallbackHandler 透过 trace_context 挂进来
@@ -288,6 +485,7 @@ def _build_config(session_id: str, run_name: str) -> dict:
     return {
         "configurable": {"thread_id": session_id},
         "run_name": run_name,
+        "recursion_limit": AGENT_RECURSION_LIMIT,
         "metadata": {
             "langfuse_session_id": session_id,
             "langfuse_tags": ["deepagents", "web"],
@@ -343,6 +541,7 @@ async def _emit_subagent_tool_events(
     msg_chunk,
     pending_tools: dict,
     subagent_id: str,
+    emitter: StreamEmitter | None = None,
 ) -> AsyncGenerator[dict, None]:
     """把子 agent 内部的 ToolMessage 转成带 subagentId 的 tool_call/tool_result 事件。
 
@@ -369,7 +568,11 @@ async def _emit_subagent_tool_events(
         or f"tc_{uuid.uuid4().hex[:8]}"
     )
     args_value = pending.get("args", "") if pending else ""
-    output = str(msg_chunk.content)[:500]
+    _out = str(msg_chunk.content)
+    _limit = 5000 if name in (
+        "kb_search", "kb_add_document", "web_search", "web_fetch",
+    ) else 500
+    output = _out[:_limit]
 
     yield _sse({
         "type": "tool_call",
@@ -377,14 +580,14 @@ async def _emit_subagent_tool_events(
         "name": pending.get("name", name) if pending else name,
         "args": args_value,
         "subagentId": subagent_id,
-    })
+    }, emitter)
     yield _sse({
         "type": "tool_result",
         "callId": call_id,
         "name": name,
         "output": output,
         "subagentId": subagent_id,
-    })
+    }, emitter)
     pending_tools.clear()
 
 
@@ -393,6 +596,10 @@ async def _stream_agent(
     input_payload: dict,
     config: dict,
     message_id: str,
+    *,
+    emitter: StreamEmitter | None = None,
+    http_request: Request | None = None,
+    thread_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """通用流式生成器：处理 stream + HITL 检查 + 收尾事件。
 
@@ -403,9 +610,19 @@ async def _stream_agent(
     2. 必须用 astream() 而不是 stream()，否则同步迭代会阻塞 asyncio 事件循环，
        sse_starlette 无法及时 flush 数据到 socket。
     """
+    registry = get_run_registry()
+    tid = thread_id or str(
+        (config.get("configurable") or {}).get("thread_id") or ""
+    )
+
+    def _stopped() -> bool:
+        if tid and registry.should_stop(tid):
+            return True
+        return False
+
     started_at = time.time()
     try:
-        yield _sse({"type": "start", "messageId": message_id})
+        yield _sse({"type": "start", "messageId": message_id}, emitter)
 
         # 工具调用分片累积（与 entrypoints/cli.py 的 log_tool_call 一致）
         # pending_tool_calls 记录从 AIMessageChunk.tool_call_chunks 里拼出来的工具调用
@@ -457,6 +674,25 @@ async def _stream_agent(
             stream_iter = _aiter_from_sync(loop, _gen())
 
         async for stream_item in stream_iter:
+            if _stopped():
+                yield _sse({
+                    "type": "error",
+                    "message": "RunCancelled: cancelled by client or deadline",
+                }, emitter)
+                yield _sse({"type": "done", "messageId": message_id}, emitter)
+                return
+            if http_request is not None:
+                try:
+                    if await http_request.is_disconnected():
+                        await registry.cancel(tid)
+                        yield _sse({
+                            "type": "error",
+                            "message": "RunCancelled: client disconnected",
+                        }, emitter)
+                        yield _sse({"type": "done", "messageId": message_id}, emitter)
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
             # subgraphs=True 单 stream_mode 形状：(namespace_tuple, (chunk, _meta))
             # 防御性兜底：若某后端版本未按预期产出，降级为 namespace=()。
             if (
@@ -508,12 +744,12 @@ async def _stream_agent(
                         "subagentId": subagent_id,
                         "subagentType": subagent_type,
                         "description": description,
-                    })
+                    }, emitter)
                 sub_state = active_subagents[subagent_id]
                 if isinstance(msg_chunk, ToolMessage):
                     # 子 agent 内部工具返回 = 嵌套步骤
                     async for evt in _emit_subagent_tool_events(
-                        msg_chunk, sub_state["pending_tools"], subagent_id
+                        msg_chunk, sub_state["pending_tools"], subagent_id, emitter
                     ):
                         yield evt
                 elif isinstance(msg_chunk, AIMessageChunk):
@@ -557,18 +793,18 @@ async def _stream_agent(
                     reasoning_content = msg_chunk.additional_kwargs.get("reasoning_content", "") or ""
 
                 if reasoning_content:
-                    yield _sse({"type": "thinking_delta", "delta": reasoning_content})
+                    yield _sse({"type": "thinking_delta", "delta": reasoning_content}, emitter)
                 if content:
                     # 基于消息结构路由（不依赖模型输出文本标记）：
                     # - 当前 AIMessage 轮有 tool_call_chunks → 工具调用轮的过渡语 → thinking
                     # - 无 tool_call_chunks → 最终答案 → delta
                     if current_ai_has_tool_calls:
-                        yield _sse({"type": "thinking_delta", "delta": content})
+                        yield _sse({"type": "thinking_delta", "delta": content}, emitter)
                     else:
-                        yield _sse({"type": "delta", "delta": content})
+                        yield _sse({"type": "delta", "delta": content}, emitter)
                 if not content and not reasoning_content:
                     # 没文本但有 chunk（如纯工具调用）→ 给前端一个思考指示
-                    yield _sse({"type": "thinking"})
+                    yield _sse({"type": "thinking"}, emitter)
             elif isinstance(msg_chunk, ToolMessage):
                 # 工具执行完成：拆成两个事件 —— 思考区独立渲染
                 #   1) tool_call   : "模型决定调工具"（name + args）
@@ -588,7 +824,7 @@ async def _stream_agent(
                 if isinstance(_meta, dict):
                     ckpt_ns = _meta.get("langgraph_checkpoint_ns", "") or ""
                 if ckpt_ns and ckpt_ns in active_subagents:
-                    yield _sse({"type": "subagent_done", "subagentId": ckpt_ns})
+                    yield _sse({"type": "subagent_done", "subagentId": ckpt_ns}, emitter)
                     del active_subagents[ckpt_ns]
                     pending_tool_calls.clear()
                     continue
@@ -604,8 +840,8 @@ async def _stream_agent(
                         "subagentId": fallback_id,
                         "subagentType": subagent_type,
                         "description": description,
-                    })
-                    yield _sse({"type": "subagent_done", "subagentId": fallback_id})
+                    }, emitter)
+                    yield _sse({"type": "subagent_done", "subagentId": fallback_id}, emitter)
                     pending_tool_calls.clear()
                     continue
 
@@ -635,18 +871,20 @@ async def _stream_agent(
                         "callId": call_id,
                         "name": pending.get("name", name),
                         "args": pending.get("args", ""),
-                    })
+                    }, emitter)
                     # 2) 再发 tool_result：补全同 callId 的 output / status=completed
-                    # kb_search 的 output 含完整引用元数据(<!--KB_REFS:...-->),
-                    # 前端要解析引用来源面板,不能截断到 500 字符
+                    # kb_search / web_search / web_fetch 的 output 含引用元数据
+                    # (<!--KB_REFS:...--> 或 <!--WEB_REFS:...-->),前端要解析,不能截断到 500
                     _output_str = str(msg_chunk.content)
-                    _out_limit = 5000 if name in ("kb_search", "kb_add_document") else 500
+                    _out_limit = 5000 if name in (
+                        "kb_search", "kb_add_document", "web_search", "web_fetch",
+                    ) else 500
                     yield _sse({
                         "type": "tool_result",
                         "callId": call_id,
                         "name": name,
                         "output": _output_str[:_out_limit],
-                    })
+                    }, emitter)
                 else:
                     # pending 找不到（tool_call_chunks 未累积到 name），
                     # 不再降级发旧 tool 事件（会污染 content），统一发 tool_call + tool_result
@@ -656,15 +894,17 @@ async def _stream_agent(
                         "callId": call_id,
                         "name": name,
                         "args": "",
-                    })
+                    }, emitter)
                     _output_str = str(msg_chunk.content)
-                    _out_limit = 5000 if name in ("kb_search", "kb_add_document") else 500
+                    _out_limit = 5000 if name in (
+                        "kb_search", "kb_add_document", "web_search", "web_fetch",
+                    ) else 500
                     yield _sse({
                         "type": "tool_result",
                         "callId": call_id,
                         "name": name,
                         "output": _output_str[:_out_limit],
-                    })
+                    }, emitter)
 
                 pending_tool_calls.clear()
 
@@ -693,25 +933,16 @@ async def _stream_agent(
                     })
                     task_indices_seen.add(idx)
 
-        # 检查 HITL 中断
+        # 检查 HITL / ask_user_question 中断
         # 必须用 aget_state（异步）：get_state 是同步阻塞调用，
         # 在 async 上下文里会卡住事件循环，导致 SSE 数据无法 flush。
         state = await agent_obj.aget_state(config)
         if state.next:
-            # 按 interrupt 分组：每个 Interrupt 自带 id，恢复时必须按 id 索引，
-            # 否则多 pending interrupt 会报 RuntimeError：
-            #   "When there are multiple pending interrupts, you must specify the interrupt id when resuming"
-            # 单个 interrupt 内可能含多个 action_request（并发工具调用），共享同一 id。
-            groups: list[dict] = []
-            for task in state.tasks:
-                for intr in task.interrupts:
-                    action_requests = intr.value.get("action_requests", [])
-                    if action_requests:
-                        groups.append(
-                            {"interruptId": intr.id, "toolCalls": action_requests}
-                        )
+            from tools.ask_user_question import collect_interrupt_groups
+
+            groups = collect_interrupt_groups(state)
             if groups:
-                yield _sse({"type": "interrupt", "groups": groups})
+                yield _sse({"type": "interrupt", "groups": groups}, emitter)
 
         logger.info(
             "stream done messageId=%s events=%d duration=%.2fs",
@@ -719,11 +950,23 @@ async def _stream_agent(
             event_count,
             time.time() - started_at,
         )
-        yield _sse({"type": "done", "messageId": message_id})
+        yield _sse({"type": "done", "messageId": message_id}, emitter)
+    except asyncio.CancelledError:
+        yield _sse({
+            "type": "error",
+            "message": "RunCancelled: cancelled",
+        }, emitter)
+        yield _sse({"type": "done", "messageId": message_id}, emitter)
+        raise
     except Exception as e:  # noqa: BLE001
+        from agent_core.llm_errors import format_llm_stream_error
+
         logger.exception("Stream error")
-        yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
-        yield _sse({"type": "done", "messageId": message_id})
+        yield _sse(
+            {"type": "error", "message": format_llm_stream_error(e)},
+            emitter,
+        )
+        yield _sse({"type": "done", "messageId": message_id}, emitter)
 
 
 async def _stream_with_artifacts(
@@ -731,6 +974,11 @@ async def _stream_with_artifacts(
     input_payload,
     config: dict,
     message_id: str,
+    *,
+    emitter: StreamEmitter | None = None,
+    http_request: Request | None = None,
+    thread_id: str | None = None,
+    run_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """流式输出 + 产物检测的公共包装。
 
@@ -745,7 +993,15 @@ async def _stream_with_artifacts(
     """
     snapshot_before = snapshot_output_dir()
     done_evt = None
-    async for evt in _stream_agent(agent_obj, input_payload, config, message_id):
+    async for evt in _stream_agent(
+        agent_obj,
+        input_payload,
+        config,
+        message_id,
+        emitter=emitter,
+        http_request=http_request,
+        thread_id=thread_id,
+    ):
         evt_data = evt.get("data", "")
         try:
             parsed = json.loads(evt_data)
@@ -761,7 +1017,10 @@ async def _stream_with_artifacts(
     if done_evt is not None:
         new_artifacts = detect_new_artifacts(snapshot_before)
         for art in new_artifacts:
-            yield _sse({"type": "artifact", **art})
+            payload = {"type": "artifact", **art}
+            if run_id:
+                payload["runId"] = run_id
+            yield _sse(payload, emitter)
         if new_artifacts:
             logger.info("Detected %d new artifact(s) in output/", len(new_artifacts))
         # 显式 flush langfuse，避免 done 已经推给前端、langfuse trace 还在本地
@@ -775,6 +1034,68 @@ async def _stream_with_artifacts(
                 logger.debug("langfuse flush failed", exc_info=True)
         yield done_evt
 
+
+def _checkpoint_id_from_state(state: Any) -> str | None:
+    cfg = getattr(state, "config", None) or {}
+    if isinstance(cfg, dict):
+        conf = cfg.get("configurable") or {}
+        if isinstance(conf, dict):
+            cid = conf.get("checkpoint_id")
+            if cid:
+                return str(cid)
+    return None
+
+
+async def _run_event_stream(
+    *,
+    agent_obj,
+    input_payload,
+    session_id: str,
+    run_name: str,
+    http_request: Request,
+) -> AsyncGenerator[dict, None]:
+    """统一 chat/resume：获取锁 → emitter → stream → 释放。"""
+    registry = get_run_registry()
+    try:
+        active = await registry.try_begin(
+            session_id,
+            deadline_seconds=AGENT_RUN_DEADLINE_SECONDS,
+        )
+    except RunConflictError as e:
+        yield {
+            "event": "message",
+            "data": json.dumps(
+                {
+                    "type": "error",
+                    "message": f"RunConflict: {e}",
+                    "activeRunId": e.active_run_id,
+                },
+                ensure_ascii=False,
+            ),
+        }
+        return
+
+    message_id = str(uuid.uuid4())
+    emitter = StreamEmitter(
+        thread_id=session_id, run_id=active.run_id, message_id=message_id
+    )
+    config, _trace_id = _open_langfuse_trace(
+        session_id, run_name, run_id=active.run_id
+    )
+    try:
+        async for evt in _stream_with_artifacts(
+            agent_obj,
+            input_payload,
+            config,
+            message_id,
+            emitter=emitter,
+            http_request=http_request,
+            thread_id=session_id,
+            run_id=active.run_id,
+        ):
+            yield evt
+    finally:
+        await registry.end(session_id, active.run_id)
 
 async def _aiter_from_sync(loop, sync_gen):
     """把同步生成器包成异步迭代器，在默认 executor 里跑。"""
@@ -795,6 +1116,8 @@ async def health():
             "ok": True,
             "ts": int(time.time() * 1000),
             "hitl_enabled": HITL_ENABLED,
+            "agent_mode_default": AGENT_MODE_DEFAULT,
+            "schema_version": SCHEMA_VERSION,
             "upload_dir": str(UPLOADS_DIR.resolve()),
         }
     )
@@ -829,33 +1152,44 @@ async def upload(file: UploadFile = File(...)):
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
-    attachment_context = _build_attachment_context(req.attachments)
-    user_message = req.message + attachment_context if attachment_context else req.message
-    user_content: str | list[dict] = user_message
+async def chat(req: ChatRequest, request: Request):
+    user_content: str | list[dict] = _build_chat_user_content(req.message, req.attachments)
+    mode = _normalize_mode(req.mode)
 
     try:
-        agent_obj = await get_agent()
+        agent_obj = await get_agent(mode)
     except RuntimeError as e:
         return JSONResponse(
             status_code=503,
             content={"message": str(e)},
         )
-    message_id = str(uuid.uuid4())
-    config, _trace_id = _open_langfuse_trace(req.sessionId, f"chat:{req.message[:20]}")
+
+    registry = get_run_registry()
+    existing = registry.get(req.sessionId)
+    if existing is not None and not existing.cancelled:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "message": "session already has an active run",
+                "activeRunId": existing.run_id,
+            },
+        )
+
     logger.info(
-        "chat session=%s msg=%r attachments=%d",
+        "chat session=%s mode=%s msg=%r attachments=%d",
         req.sessionId,
+        mode,
         req.message[:40],
         len(req.attachments),
     )
 
     async def event_stream() -> AsyncGenerator[dict, None]:
-        async for evt in _stream_with_artifacts(
-            agent_obj,
-            {"messages": [{"role": "user", "content": user_content}]},
-            config,
-            message_id,
+        async for evt in _run_event_stream(
+            agent_obj=agent_obj,
+            input_payload={"messages": [{"role": "user", "content": user_content}]},
+            session_id=req.sessionId,
+            run_name=f"chat:{req.message[:20]}",
+            http_request=request,
         ):
             yield evt
 
@@ -863,36 +1197,79 @@ async def chat(req: ChatRequest):
 
 
 @app.post("/chat/resume")
-async def resume(req: ResumeRequest):
+async def resume(req: ResumeRequest, request: Request):
     """HITL 中断后提交用户决定，继续流式输出。"""
+    mode = _normalize_mode(req.mode)
     try:
-        agent_obj = await get_agent()
+        agent_obj = await get_agent(mode)
     except RuntimeError as e:
         return JSONResponse(
             status_code=503,
             content={"message": str(e)},
         )
-    message_id = str(uuid.uuid4())
-    config, _trace_id = _open_langfuse_trace(req.sessionId, f"resume:{req.sessionId[:8]}")
-    logger.info("resume session=%s decisions=%s", req.sessionId, req.decisions)
+
+    registry = get_run_registry()
+    existing = registry.get(req.sessionId)
+    if existing is not None and not existing.cancelled:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "message": "session already has an active run",
+                "activeRunId": existing.run_id,
+            },
+        )
+
+    # 先校验 resume，避免开启 run 后才发现无效
+    from tools.ask_user_question import ResumeValidationError, validate_resume_against_state
+
+    config_peek: dict = {"configurable": {"thread_id": req.sessionId}}
+    state = await agent_obj.aget_state(config_peek)
+    try:
+        resume_map = validate_resume_against_state(state, req.decisions)
+    except ResumeValidationError as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"message": str(e)},
+        )
+
+    logger.info("resume session=%s mode=%s decisions=%s", req.sessionId, mode, req.decisions)
 
     async def event_stream() -> AsyncGenerator[dict, None]:
-        # LangGraph 多 interrupt 恢复：Command(resume={interrupt_id: value, ...})
-        # 单次调用同时恢复所有 pending interrupt，避免 chained SSE。
-        # 见 https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
-        resume_map: dict = {
-            item["interruptId"]: {"decisions": item["decisions"]}
-            for item in req.decisions
-        }
-        async for evt in _stream_with_artifacts(
-            agent_obj,
-            Command(resume=resume_map),
-            config,
-            message_id,
+        async for evt in _run_event_stream(
+            agent_obj=agent_obj,
+            input_payload=Command(resume=resume_map),
+            session_id=req.sessionId,
+            run_name=f"resume:{req.sessionId[:8]}",
+            http_request=request,
         ):
             yield evt
 
     return EventSourceResponse(event_stream(), ping=15)
+
+
+@app.post("/chat/cancel")
+async def cancel_chat(req: CancelRequest):
+    """取消活跃 run（前端 stop 时调用）。"""
+    registry = get_run_registry()
+    ok = await registry.cancel(req.sessionId, req.runId)
+    return {
+        "sessionId": req.sessionId,
+        "cancelled": ok,
+        "runId": req.runId or registry.active_run_id(req.sessionId),
+    }
+
+
+@app.get("/chat/events")
+async def chat_events(sessionId: str, after: str | None = None, limit: int = 500):
+    """从 EventLog 重放事件，供 SSE 断线补流。"""
+    events = get_event_log().replay(sessionId, after_event_id=after, limit=limit)
+    active_run_id = get_run_registry().active_run_id(sessionId)
+    return {
+        "sessionId": sessionId,
+        "events": events,
+        "activeRunId": active_run_id,
+        "latestEventId": get_event_log().latest_event_id(sessionId),
+    }
 
 
 @app.get("/chat/state")
@@ -915,10 +1292,14 @@ async def chat_state(sessionId: str):
     config: dict = {"configurable": {"thread_id": sessionId}}
     state = await agent_obj.aget_state(config)
     interrupts: list[dict] = []
+    interrupt_groups: list[dict] = []
     if state.next:
-        for task in state.tasks:
-            for intr in task.interrupts:
-                interrupts.extend(intr.value.get("action_requests", []))
+        from tools.ask_user_question import collect_interrupt_groups
+
+        interrupt_groups = collect_interrupt_groups(state)
+        for g in interrupt_groups:
+            if g.get("kind") == "tool_approval":
+                interrupts.extend(g.get("toolCalls") or [])
     values = state.values or {}
     todos = values.get("todos", []) if isinstance(values, dict) else []
     messages = values.get("messages", []) if isinstance(values, dict) else []
@@ -926,8 +1307,11 @@ async def chat_state(sessionId: str):
         "sessionId": sessionId,
         "hasInterrupt": bool(state.next),
         "interrupts": interrupts,
+        "interruptGroups": interrupt_groups,
         "todos": todos,
         "messageCount": len(messages),
+        "checkpointId": _checkpoint_id_from_state(state),
+        "activeRunId": get_run_registry().active_run_id(sessionId),
     }
 
 
@@ -1059,7 +1443,11 @@ def _map_history_messages(raw_messages: list, session_id: str) -> list[dict]:
                 continue
             tool_call_id = getattr(msg, "tool_call_id", "") or ""
             name = msg.name or ""
-            output = str(msg.content)[:500]
+            _out = str(msg.content)
+            _limit = 5000 if name in (
+                "kb_search", "kb_add_document", "web_search", "web_fetch",
+            ) else 500
+            output = _out[:_limit]
             record = None
             for tc in current_assistant.get("toolCalls", []):
                 if tc["id"] == tool_call_id:
@@ -1200,11 +1588,25 @@ async def chat_messages(sessionId: str):
     raw_messages = values.get("messages", []) if isinstance(values, dict) else []
     todos = values.get("todos", []) if isinstance(values, dict) else []
     messages = _map_history_messages(raw_messages, sessionId)
+    interrupt_groups: list[dict] = []
+    if state.next:
+        from tools.ask_user_question import collect_interrupt_groups
+
+        interrupt_groups = collect_interrupt_groups(state)
+        # 将最后一条 assistant 标为 awaiting_approval，便于前端直接渲染
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                msg["status"] = "awaiting_approval"
+                msg["pendingInterruptGroups"] = interrupt_groups
+                break
     return {
         "sessionId": sessionId,
         "messages": messages,
         "todos": todos,
         "hasInterrupt": bool(state.next),
+        "interruptGroups": interrupt_groups,
+        "checkpointId": _checkpoint_id_from_state(state),
+        "activeRunId": get_run_registry().active_run_id(sessionId),
     }
 
 
@@ -1213,8 +1615,23 @@ def main() -> None:
     import uvicorn
 
     port = int(os.getenv("PORT", "8000"))
-    host = os.getenv("HOST", "0.0.0.0")
-    logger.info("Agent Web Bridge listening on http://%s:%s (hitl=%s)", host, port, HITL_ENABLED)
+    host = os.getenv("HOST", WEB_HOST_DEFAULT)
+    token = AGENT_API_TOKEN or os.getenv("AGENT_API_TOKEN", "").strip()
+    if not is_loopback_host(host) and not token:
+        raise SystemExit(
+            f"HOST={host!r} 为非回环地址，必须设置 AGENT_API_TOKEN 后才能启动。"
+        )
+    if not token:
+        logger.warning(
+            "AGENT_API_TOKEN 未设置：API 无鉴权。仅建议在本机回环地址使用。"
+        )
+    logger.info(
+        "Agent Web Bridge listening on http://%s:%s (hitl=%s cors=%s)",
+        host,
+        port,
+        HITL_ENABLED,
+        ALLOWED_ORIGINS,
+    )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

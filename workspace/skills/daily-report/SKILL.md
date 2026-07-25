@@ -1,7 +1,7 @@
 ---
 name: daily-report
 description: "生成结构化的新闻/资讯日报。当用户要总结某领域的新闻日报（如AI新闻、科技资讯、行业动态）时调用。负责拆维度→委托检索→综合→写大纲→写正文→调 md-to-pdf 渲染的全流程编排。不用于单条资讯查询、非日报格式的文档生成。"
-allowed-tools: task read_file write_file edit_file
+allowed-tools: task read_file inspect_file write_file edit_file replace_file check_research_material execute ask_user_question
 ---
 
 # Daily Report 日报生成
@@ -33,7 +33,7 @@ allowed-tools: task read_file write_file edit_file
 ### Step 2: 存档原始需求
 
 ```
-write_file(path="/research_request.md", content="<用户原始需求 + 日期>")
+replace_file(path="/tmp/research_request.md", content="<用户原始需求 + 日期>")
 ```
 
 ### Step 3: 委托检索（用通用 research 子 agent）
@@ -48,8 +48,9 @@ write_file(path="/research_request.md", content="<用户原始需求 + 日期>")
 task(subagent_type="research-agent", description="检索最近一周AI模型发布动态")
 ```
 
-> **注意：research-agent 只能拿到搜索摘要（snippet），不能抓取正文。**
-> 鼓励子 agent 换多个关键词搜索以覆盖面，把每条结果的标题+链接+摘要落盘到 `/tmp/research/<主题>.md`。
+> research-agent 按两阶段流程先搜摘要、再抓正文，并把 `## 抓取记录` 全文落盘到
+> `/tmp/research/<主题>.md`。返回后先用 `check_research_material(..., depth="brief")`
+> 校验，再抽查正文。
 > 若某维度信息不足，可换关键词再委托一次，但单维度不超过 2 次委托。
 
 ### Step 4: 综合发现
@@ -61,7 +62,7 @@ task(subagent_type="research-agent", description="检索最近一周AI模型发�
 ### Step 5: 写大纲
 
 ```
-write_file(path="/tmp/outline.md", content="<日报大纲>")
+replace_file(path="/tmp/outline.md", content="<日报大纲>")
 ```
 
 大纲结构参考：
@@ -91,11 +92,11 @@ write_file(path="/tmp/outline.md", content="<日报大纲>")
 <所有引用链接>
 ```
 
-🛑 **Checkpoint**：把大纲展示给用户，等确认后再写正文。若用户要求调整维度或增删条目，回到 Step 1/3 调整。
+🛑 **Checkpoint**：把大纲要点展示给用户后，**必须调用 `ask_user_question`** 等待确认，再写正文。若用户要求调整维度或增删条目，回到 Step 1/3 调整。禁止纯文本「请确认」后自行开写。
 
 ### Step 6: 写正文
 
-按确认后的大纲写 `/tmp/daily_report.md`：
+按确认后的大纲用 `replace_file` 写 `/tmp/daily_report.md`：
 
 - 每条新闻带来源引用 `[1]`
 - 每个维度 2-5 条，每条 2-3 句概述
@@ -112,14 +113,14 @@ write_file(path="/tmp/outline.md", content="<日报大纲>")
 4. 流程：
    ```
    # 先写 HTML
-   write_file(path="output/daily_report.html", content="<参考md-to-pdf showcase/lite设计的HTML>")
+   replace_file(path="output/daily_report.html", content="<参考md-to-pdf showcase/lite设计的HTML>")
    # 再渲染 PDF
    execute(command="python skills/md-to-pdf/scripts/render_pdf.py --html output/daily_report.html --out output/daily_report.pdf --page-size A4")
    ```
 
 ### Step 8: 验证与交付
 
-- `read_file` 回读 `/research_request.md`，确认覆盖用户全部要求
+- `read_file` 回读 `/tmp/research_request.md`，确认覆盖用户全部要求
 - 确认 `output/daily_report.pdf` 存在且文件大小 > 0
 - 汇报：路径、页数、覆盖的维度
 
@@ -134,7 +135,7 @@ write_file(path="/tmp/outline.md", content="<日报大纲>")
 | 大纲 | `/tmp/outline.md` |
 | 正文 MD | `/tmp/daily_report.md` |
 | 研究素材 | `/tmp/research/*.md` |
-| 原始需求存档 | `/research_request.md` |
+| 原始需求存档 | `/tmp/research_request.md` |
 
 ---
 

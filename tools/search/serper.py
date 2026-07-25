@@ -63,12 +63,15 @@ class SerperProvider(BaseSearchProvider):
         # Serper 通用搜索:{"organic": [...]}
         # Serper 新闻搜索:{"news": [...]}
         items = data.get("organic") or data.get("news") or []
-        for item in items:
-            results.append(
-                SearchResult(
-                    title=item.get("title", "") or "",
-                    url=item.get("link", "") or "",
-                    snippet=item.get("snippet", "") or "",
-                )
+        for i, item in enumerate(items):
+            r = SearchResult(
+                title=item.get("title", "") or "",
+                url=item.get("link", "") or "",
+                snippet=item.get("snippet", "") or "",
+                provider="serper",
+                provider_rank=i,
+                published_at=str(item.get("date") or item.get("publishedAt") or ""),
             )
+            r.ensure_derived()
+            results.append(r)
         return results

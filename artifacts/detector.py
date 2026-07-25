@@ -43,25 +43,33 @@ _MIME_MAP = {
 # ----------------------------- run.py 风格（前端 SSE） -----------------------------
 
 
-def snapshot_output_dir() -> set[tuple[str, int]]:
-    """Take a snapshot of output/ directory: set of (relative_path, file_size)."""
-    snapshot: set[tuple[str, int]] = set()
+def snapshot_output_dir() -> set[tuple[str, int, int]]:
+    """Take a snapshot of output/ directory: set of (relative_path, file_size, mtime_ns)."""
+    snapshot: set[tuple[str, int, int]] = set()
     for f in OUTPUT_DIR.rglob("*"):
         if f.is_file():
             try:
+                st = f.stat()
                 rel = f.relative_to(OUTPUT_DIR).as_posix()
-                snapshot.add((rel, f.stat().st_size))
+                snapshot.add((rel, st.st_size, getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))))
             except OSError:
                 continue
     return snapshot
 
 
-def detect_new_artifacts(before: set[tuple[str, int]]) -> list[dict]:
+def detect_new_artifacts(before: set) -> list[dict]:
     """Compare current output/ with the before snapshot, return list of artifact metadata dicts."""
     after = snapshot_output_dir()
-    new_files = after - before
+    sample = next(iter(before), None) if before else None
+    if sample is not None and len(sample) == 2:
+        before_ps = {(p, s) for p, s in before}  # type: ignore[misc]
+        after_ps = {(p, s) for p, s, _m in after}
+        changed = after_ps - before_ps
+        new_files = [(p, s, m) for p, s, m in after if (p, s) in changed]
+    else:
+        new_files = list(after - before)  # type: ignore[operator]
     artifacts = []
-    for rel_path, size in new_files:
+    for rel_path, size, _mtime in new_files:
         name = Path(rel_path).name
         ext = Path(rel_path).suffix.lower()
         mime = _MIME_MAP.get(ext, mimetypes.guess_type(name)[0] or "application/octet-stream")

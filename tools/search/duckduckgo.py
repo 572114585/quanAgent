@@ -43,10 +43,19 @@ class DuckDuckGoProvider(BaseSearchProvider):
         )
 
         results: list[SearchResult] = []
-        for item in raw:
+        for i, item in enumerate(raw):
             # text 接口字段:title/href/body;news 接口:title/url/body
             title = item.get("title", "") or ""
             url = item.get("url") or item.get("href", "") or ""
             snippet = item.get("body", "") or ""
-            results.append(SearchResult(title=title, url=url, snippet=snippet))
+            r = SearchResult(
+                title=title,
+                url=url,
+                snippet=snippet,
+                provider="duckduckgo",
+                provider_rank=i,
+                published_at=str(item.get("date") or ""),
+            )
+            r.ensure_derived()
+            results.append(r)
         return results

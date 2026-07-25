@@ -11,13 +11,15 @@ This project follows a "full-stack microservices + Skills" architecture. The cor
 - 🤖 **General Agent Kernel** — built on DeepAgents, supports task planning, tool scheduling, and state management
 - 🔌 **Pluggable Skills System** — MinerU document extraction, Word/Excel processing, Markdown-to-PDF, daily reports, web design, video presentation, and more
 - 🌊 **SSE Streaming Response** — real-time streaming of conversation content, tool call status, and thinking process; thinking content and final answer are rendered separately
-- 👤 **Human-in-the-Loop (HITL)** — supports user approval / rejection before critical operations
+- 👤 **Human-in-the-Loop (HITL)** — high-risk shell (interpreter inline / network / install / unknown) needs confirm; **approve once for this call**; hard denies still apply
+- 🛡️ **Tool-level permissions + workspace Auto** — writes auto-allowed in workspace; `execute` classified as `auto`/`ask`/`deny`; Plan mode plans only; channels deny dangerous tools
+- 🪝 **Hooks** — before/after tool intercept (built-in permission + audit; injected into main + subagents; optional `workspace/hooks/*.py`)
 - 📁 **Multimodal Support** — image and document (PDF / Word / Excel / Markdown) upload and parsing
 - 📦 **Automatic Artifact Detection** — files generated during a conversation are auto-detected and pushed to the frontend
 - 💬 **Multi-Channel Access** — WeChat and WeCom channel bridges
 - 🖥️ **Cross-Platform Frontend** — Web + Desktop (Tauri 2) + Mobile, based on Vue 3 + TypeScript
 - 🔧 **Configurable API URL** — backend address can be set dynamically from the frontend settings panel
-- 🔐 **Multi-Layer Sandbox** — shell command whitelist, Skill script whitelist, write-path sandbox, curl host whitelist, token-level path rewriting
+- 🔐 **Command safety layer (not an OS sandbox)** — soft policy (bypass after HITL or auto class) + hard deny + write-path boundary + path rewriting; string policy, not OS process isolation
 - 🧠 **Multi-LLM Provider** — switch between agnes (default) and deepseek via environment variables
 - 🔎 **Multi-Provider Search Failover** — Tavily → Brave → Serper → DuckDuckGo, with 1-hour cooldown on quota errors and DuckDuckGo as the final fallback
 - 💾 **SQLite Task Plan Persistence** — thread state (messages / todos / files / pending interrupts) survives process restarts; HITL resume works across restarts
@@ -65,7 +67,7 @@ pip install -r requirement.txt
 2. Configure environment variables (optional, create a `.env` file):
 
 ```env
-# === LLM Provider switch (agnes | deepseek) ===
+# === LLM Provider switch (agnes | deepseek | sensenova | siliconflow | volcengine) ===
 LLM_PROVIDER=agnes
 
 # agnes config (default)
@@ -77,6 +79,19 @@ AGNES_API_KEY=your-agnes-key
 # DEEPSEEK_MODEL=deepseek-chat
 # DEEPSEEK_BASE_URL=https://api.deepseek.com
 # DEEPSEEK_API_KEY=your-deepseek-key
+
+# SiliconFlow (vision / object-sculptor): https://api-docs.siliconflow.cn/docs/api/chat-completions-post
+# LLM_PROVIDER=siliconflow
+# SILICONFLOW_API_KEY=your-siliconflow-key
+# SILICONFLOW_MODEL=Qwen/Qwen3.6-35B-A3B
+# SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
+# LLM_SUPPORTS_VISION=true
+# LLM_ENABLE_THINKING=false
+
+# Volcengine Ark / Doubao (LLM_PROVIDER=volcengine|ark|doubao)
+# VOLCENGINE_MODEL=doubao-seed-2.1-turbo
+# VOLCENGINE_BASE_URL=https://ark.cn-beijing.volces.com/api/plan/v3
+# VOLCENGINE_API_KEY=your-ark-api-key
 
 # === MinerU document extraction Skill (optional) ===
 # MINERU_API_TOKEN=your-mineru-token
@@ -94,6 +109,14 @@ HOST=0.0.0.0
 HITL_ENABLED=true
 MAX_UPLOAD_SIZE=20971520    # 20MB, in bytes
 LOG_LEVEL=INFO
+
+# === Agent mode & permissions (optional) ===
+# AGENT_MODE=agent|plan
+# EXECUTE_PROFILE=workspace_auto|manual   # default workspace_auto
+# PERMISSION_EXECUTE=ask|allow|deny
+# PERMISSION_WRITE=ask|allow|deny         # default allow
+# CHANNEL_DENY_EXECUTE=true
+# CLI --always-approve only when outer isolation (container/VM) already exists
 
 # === Optional: Langfuse observability ===
 # LANGFUSE_PUBLIC_KEY=...
@@ -191,8 +214,9 @@ d:\project
 │   └── runtime.py               # build_agent() factory + agent singleton + DualSqliteSaver
 ├── sandbox/                     # ~1200-line shell sandbox (split from former agent_runtime.py)
 │   ├── backend.py               # _SkillsShellBackend (path rewriting + encoding)
-│   ├── whitelist.py             # _ShellWhitelistFilter (command whitelist) + assembled backend singleton
-│   ├── constants.py             # DEFAULT_ALLOWED_COMMANDS, _NODE_BUILD_COMMANDS
+│   ├── whitelist.py             # _ShellWhitelistFilter (hard/soft deny) + assembled backend singleton
+│   ├── trust.py                 # HITL approval trust-level ContextVar
+│   ├── constants.py             # DEFAULT_ALLOWED_COMMANDS, _NODE_BUILD_COMMANDS, hard-deny patterns
 │   └── path_rewriter.py         # shlex tokenization + token-level path rewriting
 ├── tools/                       # flat tool package
 │   ├── web_search.py            # @tool web_search (uses tools/search/ failover chain)
@@ -253,21 +277,18 @@ d:\project
 - [x] Markdown rendering + code highlighting (Shiki)
 - [x] File upload (images, PDF, Word, Excel, Markdown; 20MB limit)
 - [x] Multimodal image input (with graceful fallback when model lacks vision)
-- [x] HITL approval flow (`web_search`, `execute` tools)
+- [x] HITL approval flow (high-risk `execute`; `web_search`/`web_fetch` default allow)
 - [x] Frontend-configurable API Base URL
 - [x] WeChat / WeCom channel bridging
 - [x] Skills system (mineru, excel-xlsx, word-docx, md-to-pdf, daily-report, web-design-engineer, web-video-presentation)
 - [x] **Thinking / final answer separation** — message-structure-based routing; `thinking_delta` → collapsible area, `delta` → main answer area
 - [x] **Automatic artifact detection** — pre/post conversation diff of `output/`; new files pushed via `artifact` events
-- [x] **Multi-layer sandbox** (in `sandbox/` package):
-  - Shell command whitelist (python/ls/cat read-only probes + Node build chain)
-  - Skill script whitelist (glob `skills/*/scripts/*.{py,sh}` at startup; new scripts require restart)
-  - Inline `python -c/-m/-` and `bash -c/-s` interception
-  - Write-path sandbox (only `output/` and `tmp/` writable; `skills/` subtree fully read-only)
-  - curl host whitelist (only `api.openai.com` allowed for TTS)
-  - Command substitution syntax (backticks, `$()`) interception
-  - Token-level path rewriting (handles `/skills/...`, `D:\skills\...` and other variants; preserves JSON quotes)
-  - utf-8/gbk dual decoding + forced `PYTHONUTF8=1` (Windows Chinese compatibility)
+- [x] **Command safety layer** (`sandbox/` + `agent_core/execute_policy.py`):
+  - **Workspace Auto**: readonly probes / readonly git / known build-test / skill scripts → auto-run
+  - **Ask once**: `python -c` / `bash -c` / network / install / unknown → HITL; approve bypasses soft policy
+  - **Hard deny** (never bypassed): command substitution, cwd escape, catastrophic patterns
+  - Write-path boundary (`output/`/`tmp/` only) + path rewriting; Hooks injected into subagents
+  - **Not** an OS-level process sandbox
 - [x] Multi-LLM Provider switch (agnes default / deepseek)
 - [x] SSE ping keepalive (15s interval)
 - [x] TypeScript SSE event handling (no default case in switch)
@@ -293,9 +314,10 @@ d:\project
 - Python deps require `fastapi>=0.110`, `uvicorn[standard]>=0.27`, `sse-starlette>=2.0` for SSE support
 - SSE streams must use `async def` generators and `agent.astream()`; otherwise the event loop blocks
 - TypeScript must explicitly handle all SSE event types (no default case)
-- **Sandbox constraints**: agent writes can only land in `output/` or `tmp/`; `skills/` subtree is fully read-only; new skill scripts must be placed under `workspace/skills/<name>/scripts/` and require a service restart to take effect
+- **Path constraints**: agent writes can only land in `output/` or `tmp/`; `skills/` subtree is fully read-only; new skill scripts must be placed under `workspace/skills/<name>/scripts/` and require a service restart to take effect
+- **HITL vs command policy**: default `EXECUTE_PROFILE=workspace_auto`. Routine local commands auto-run; approving a high-risk `execute` applies to that call and bypasses soft policy. Hard rules (command substitution, cwd escape, catastrophic patterns) still apply. `--always-approve` skips all asks (use only with outer isolation)
 - **Path conventions**: SKILL.md may use `/skills/...`, `D:\skills\...`, or `skills/...` — the token-level rewriter unifies them to relative paths; when writing artifacts, you must use the `output/xxx` relative path
-- **curl egress**: only `api.openai.com` is allowed (for web-video-presentation TTS); all other hosts are blocked; adding a new TTS backend requires modifying `_CURL_ALLOWED_HOSTS`
+- **curl egress**: without approval only `api.openai.com` is allowed (TTS); after HITL approve other hosts may run; default TTS hosts live in `_CURL_ALLOWED_HOSTS`
 - **Search providers**: at least one of Tavily / Brave / Serper should have an API key for the best experience; if all three are unconfigured, the chain falls back to DuckDuckGo only
 
 ## Architecture Document

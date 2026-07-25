@@ -7,6 +7,7 @@ import { useShortcuts } from '@/composables/useShortcuts'
 import MessageBubble from './MessageBubble.vue'
 import FloatingTodoList from './FloatingTodoList.vue'
 import HitlApproval from './HitlApproval.vue'
+import AskUserQuestion from './AskUserQuestion.vue'
 import { useChatStore, type ChatMessage } from '@/stores/chat'
 import { useSessionsStore } from '@/stores/sessions'
 import { uploadFile } from '@/api/chat'
@@ -48,6 +49,18 @@ const pendingApprovalMsg = computed(() => {
 })
 const pendingInterruptGroups = computed(() => pendingApprovalMsg.value?.pendingInterruptGroups ?? [])
 const hasPendingApproval = computed(() => pendingInterruptGroups.value.length > 0)
+const toolApprovalGroups = computed(() =>
+  pendingInterruptGroups.value.filter(
+    (g) => (g.kind || 'tool_approval') === 'tool_approval' && (g.toolCalls?.length ?? 0) > 0
+  )
+)
+const askUserGroups = computed(() =>
+  pendingInterruptGroups.value.filter(
+    (g) => g.kind === 'ask_user_question' || (g.questions?.length ?? 0) > 0
+  )
+)
+const hasToolApproval = computed(() => toolApprovalGroups.value.length > 0)
+const hasAskUser = computed(() => askUserGroups.value.length > 0)
 
 const suggestedPrompts = [
   { icon: Wand2, label: '帮我写一段欢迎语', prompt: '帮我写一段简洁友好的产品欢迎语' },
@@ -172,8 +185,22 @@ onMounted(() => {
   input.value = ''
 })
 
-function onDecide(groups: ResumeGroup[]) {
-  void chat.resume(props.session.id, groups)
+/** 多 interrupt 同时挂起时须一次 resume 全部 id；分卡提交时先缓存再合并发出 */
+const pendingResumeDraft = ref<ResumeGroup[]>([])
+
+function onDecide(partial: ResumeGroup[]) {
+  const byId = new Map(pendingResumeDraft.value.map((g) => [g.interruptId, g]))
+  for (const g of partial) {
+    byId.set(g.interruptId, g)
+  }
+  pendingResumeDraft.value = [...byId.values()]
+  const needed = new Set(pendingInterruptGroups.value.map((g) => g.interruptId))
+  const have = new Set(pendingResumeDraft.value.map((g) => g.interruptId))
+  if ([...needed].every((id) => have.has(id))) {
+    const payload = pendingResumeDraft.value
+    pendingResumeDraft.value = []
+    void chat.resume(props.session.id, payload)
+  }
 }
 </script>
 
@@ -240,6 +267,7 @@ function onDecide(groups: ResumeGroup[]) {
               :attachments="m.attachments"
               :artifacts="m.artifacts"
               :kb-references="m.kbReferences"
+              :web-references="m.webReferences"
               :can-regenerate="m.role === 'assistant' && (m.status === 'complete' || m.status === 'cancelled' || (m.artifacts && m.artifacts.length > 0))"
               @regenerate="chat.regenerate(props.session.id)"
             />
@@ -251,10 +279,17 @@ function onDecide(groups: ResumeGroup[]) {
           <!-- 悬浮 HITL 确认框：紧贴输入框上方，宽度对齐 -->
           <div
             v-if="hasPendingApproval"
-            class="max-w-3xl mx-auto px-3 md:px-4 pb-2 pointer-events-auto animate-slide-up"
+            class="max-w-3xl mx-auto px-3 md:px-4 pb-2 pointer-events-auto animate-slide-up space-y-2"
           >
+            <AskUserQuestion
+              v-if="hasAskUser"
+              :groups="askUserGroups"
+              class="shadow-xl shadow-black/10"
+              @decide="onDecide"
+            />
             <HitlApproval
-              :groups="pendingInterruptGroups"
+              v-if="hasToolApproval"
+              :groups="toolApprovalGroups"
               class="shadow-xl shadow-black/10"
               @decide="onDecide"
             />
@@ -308,6 +343,37 @@ function onDecide(groups: ResumeGroup[]) {
                   class="flex items-end gap-2 bg-surface-elevated/95 backdrop-blur-md border border-border rounded-2xl p-2 shadow-xl shadow-black/10 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20 transition-all"
                   @submit.prevent="send()"
                 >
+                  <div
+                    class="flex shrink-0 rounded-lg border border-border overflow-hidden text-[11px]"
+                    role="group"
+                    aria-label="Agent 模式"
+                  >
+                    <button
+                      type="button"
+                      class="px-2 py-1.5 transition-colors"
+                      :class="
+                        chat.agentMode === 'agent'
+                          ? 'bg-accent text-white'
+                          : 'bg-transparent text-ink-muted hover:text-ink'
+                      "
+                      @click="chat.setAgentMode('agent')"
+                    >
+                      Agent
+                    </button>
+                    <button
+                      type="button"
+                      class="px-2 py-1.5 transition-colors"
+                      :class="
+                        chat.agentMode === 'plan'
+                          ? 'bg-accent text-white'
+                          : 'bg-transparent text-ink-muted hover:text-ink'
+                      "
+                      title="只规划，不执行写入/Shell"
+                      @click="chat.setAgentMode('plan')"
+                    >
+                      Plan
+                    </button>
+                  </div>
                   <button
                     type="button"
                     class="btn-ghost p-2 shrink-0"

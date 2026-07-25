@@ -1,7 +1,7 @@
 ---
 name: outline-planner
 description: "大纲规划方法论。检索完成后，主 Agent 读取本 skill 执行两阶段大纲规划：Step1 根据检索内容+文档类型+用户需求生成'表达什么'的大纲；Step2 根据大纲+输出形式挑选'怎么表达'（图表/表格/流程图等），补充到大纲。两步完成后展示给用户确认。"
-allowed-tools: read_file write_file
+allowed-tools: read_file inspect_file write_file edit_file replace_file ask_user_question
 ---
 
 # Outline Planner 大纲规划方法论
@@ -58,26 +58,27 @@ Step 2：怎么表达（How to present）
 
 ## 1. 概述
 - 摘要：介绍 AI Agent 的定义、发展背景和报告范围
-- 预计字数：500
+- 预计字数：800
 - 所需数据点：AI Agent 定义、发展时间线
 - 来源：[1][3]
 
 ## 2. 技术原理
 - 摘要：解析 AI Agent 的核心技术架构（感知-规划-执行-学习）
-- 预计字数：1500
+- 预计字数：2200
 - 所需数据点：架构图、关键技术组件
 - 来源：[2][4][5]
 
 ## 3. 主流框架对比
 - 摘要：对比 LangChain / AutoGPT / CrewAI 等主流框架
-- 预计字数：1200
+- 预计字数：2000
 - 所需数据点：框架功能矩阵、性能 benchmark
 - 来源：[6][7][8]
 ```
 
 ### Step 1 产出
 
-写入 `/tmp/outline.md`。
+用 `replace_file` 写入 `/tmp/outline.md`。该路径可能残留旧任务内容，禁止先用
+`rm`、占位文本、Shell 重定向或解释器内联清空文件。
 
 ## C. Step 2 详细：怎么表达
 
@@ -98,7 +99,7 @@ Step 2：怎么表达（How to present）
 ```markdown
 ## 2. 技术原理
 - 摘要：解析 AI Agent 的核心技术架构（感知-规划-执行-学习）
-- 预计字数：1500
+- 预计字数：2200
 - 所需数据点：架构图、关键技术组件
 - 来源：[2][4][5]
 - 呈现方式：概念图（架构层级关系）+ 流程图（感知-规划-执行-学习循环）
@@ -106,7 +107,7 @@ Step 2：怎么表达（How to present）
 
 ### Step 2 产出
 
-更新 `/tmp/outline.md`，每节增加"呈现方式"标注。
+用 `replace_file` 完整更新 `/tmp/outline.md`，每节增加"呈现方式"标注。
 
 ## D. 表达方式清单
 
@@ -138,18 +139,22 @@ Step 2：怎么表达（How to present）
 
 ## F. HITL 确认
 
-两步完成后，将 `/tmp/outline.md` 完整展示给用户：
+两步完成后，将 `/tmp/outline.md` 要点展示给用户，并**调用 `ask_user_question`**：
 
 ```
-大纲已规划完成（含表达方式），请确认：
-1. 章节结构是否合理？
-2. 每节的表达方式是否恰当？
-3. 是否需要增删章节或调整表达方式？
-确认后进入逐节撰写。
+ask_user_question(
+  title="大纲确认",
+  questions=[
+    {"id":"structure","prompt":"章节结构是否合理？","options":["合理，继续撰写","需要调整"],"allowFreeText":true},
+    {"id":"presentation","prompt":"每节的表达方式是否恰当？","options":["恰当","需要调整"],"allowFreeText":true},
+    {"id":"scope","prompt":"是否需要增删章节或调整表达方式？","options":["不需要","需要调整"],"allowFreeText":true}
+  ]
+)
 ```
 
-- 用户要求调整 → 修改大纲 → 重新确认
+- 用户要求调整 → 修改大纲 → 再次 `ask_user_question`
 - 用户确认 → 进入逐节撰写（Phase 2.3）
+- **禁止**用纯文本提问后自行假设「用户未回复即通过」
 
 ## G. 使用指引（给主 Agent）
 
@@ -157,8 +162,8 @@ Step 2：怎么表达（How to present）
 1. 检索 Review 通过后，读取本 SKILL.md
 2. 确定文档类型（product_brief / tech_research / news_daily / data_analysis）
 3. 读取 references/doc-type-templates.md 获取对应结构模板
-4. 执行 Step 1：综合检索内容 → 按模板生成大纲 → 写入 /tmp/outline.md
-5. 执行 Step 2：逐节挑选表达方式 → 更新 /tmp/outline.md
+4. 执行 Step 1：综合检索内容 → 按模板生成大纲 → replace_file /tmp/outline.md
+5. 执行 Step 2：逐节挑选表达方式 → replace_file 更新 /tmp/outline.md
 6. 展示完整大纲给用户确认
 7. 用户确认后 → 进入逐节撰写
 ```

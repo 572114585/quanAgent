@@ -8,6 +8,8 @@ from .brave import BraveProvider
 from .serper import SerperProvider
 from .duckduckgo import DuckDuckGoProvider
 from .registry import get_search_results, reset_providers
+from .fuse import fuse_search_results
+from .url_utils import canonicalize_url, classify_source_type, extract_domain
 
 __all__ = [
     "BaseSearchProvider",
@@ -20,4 +22,8 @@ __all__ = [
     "DuckDuckGoProvider",
     "get_search_results",
     "reset_providers",
+    "fuse_search_results",
+    "canonicalize_url",
+    "classify_source_type",
+    "extract_domain",
 ]

@@ -10,11 +10,11 @@
  *   POST {baseURL}/chat/resume  HITL 中断后提交决定
  *   POST {baseURL}/upload       FormData 单文件上传，返回 { url, name, mime, size }
  */
-import type { ChatRequest, StreamEvent, InterruptGroup, ResumeGroup, Message, TodoItem, Session } from '@/types/domain'
-import { chatStream, resumeStream, getRuntimeBaseUrl } from './sse'
+import type { ChatRequest, StreamEvent, InterruptGroup, ResumeGroup, Message, TodoItem, Session, AgentMode } from '@/types/domain'
+import { authHeaders, chatStream, resumeStream, getRuntimeBaseUrl } from './sse'
 
 export interface StreamHandlers {
-  onStart?: (messageId: string) => void
+  onStart?: (messageId: string, meta?: { runId?: string }) => void
   onDelta: (delta: string) => void
   onThinking?: () => void
   onThinkingDelta?: (delta: string) => void
@@ -32,6 +32,7 @@ export interface StreamHandlers {
   onArtifact?: (artifact: { name: string; path: string; url: string; mime: string; size: number }) => void
   onError?: (message: string) => void
   onDone?: () => void
+  onEventMeta?: (meta: { eventId?: string; runId?: string }) => void
 }
 
 /**
@@ -43,10 +44,18 @@ async function consumeStream(
   handlers: StreamHandlers
 ): Promise<void> {
   let sawError: string | null = null
+  const seen = new Set<string>()
   for await (const evt of stream) {
+    if (evt.eventId) {
+      if (seen.has(evt.eventId)) continue
+      seen.add(evt.eventId)
+      handlers.onEventMeta?.({ eventId: evt.eventId, runId: evt.runId })
+    } else if (evt.runId) {
+      handlers.onEventMeta?.({ runId: evt.runId })
+    }
     switch (evt.type) {
       case 'start':
-        handlers.onStart?.(evt.messageId)
+        handlers.onStart?.(evt.messageId, { runId: evt.runId })
         break
       case 'delta':
         handlers.onDelta(evt.delta)
@@ -117,7 +126,11 @@ export async function sendChatMessage(
   handlers: StreamHandlers
 ): Promise<void> {
   await consumeStream(
-    chatStream(req, { signal, onUsage: handlers.onUsage }),
+    chatStream(req, {
+      signal,
+      onUsage: handlers.onUsage,
+      onEventId: (eventId, runId) => handlers.onEventMeta?.({ eventId, runId })
+    }),
     handlers
   )
 }
@@ -130,10 +143,18 @@ export async function resumeChat(
   sessionId: string,
   decisions: ResumeGroup[],
   signal: AbortSignal,
-  handlers: StreamHandlers
+  handlers: StreamHandlers,
+  opts?: { mode?: AgentMode }
 ): Promise<void> {
   await consumeStream(
-    resumeStream({ sessionId, decisions }, { signal, onUsage: handlers.onUsage }),
+    resumeStream(
+      { sessionId, decisions, mode: opts?.mode },
+      {
+        signal,
+        onUsage: handlers.onUsage,
+        onEventId: (eventId, runId) => handlers.onEventMeta?.({ eventId, runId })
+      }
+    ),
     handlers
   )
 }
@@ -149,7 +170,7 @@ export async function uploadFile(file: File): Promise<{
   const url = base ? `${base.replace(/\/+$/, '')}/upload` : '/upload'
   const fd = new FormData()
   fd.append('file', file)
-  const res = await fetch(url, { method: 'POST', body: fd })
+  const res = await fetch(url, { method: 'POST', body: fd, headers: authHeaders() })
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`
     try {
@@ -169,6 +190,20 @@ export interface HistoryResponse {
   messages: Message[]
   todos: TodoItem[]
   hasInterrupt: boolean
+  interruptGroups?: InterruptGroup[]
+  checkpointId?: string | null
+  activeRunId?: string | null
+}
+
+export interface ChatStateResponse {
+  sessionId: string
+  hasInterrupt: boolean
+  interrupts: unknown[]
+  interruptGroups: InterruptGroup[]
+  todos: TodoItem[]
+  messageCount: number
+  checkpointId?: string | null
+  activeRunId?: string | null
 }
 
 /**
@@ -180,7 +215,7 @@ export async function fetchHistory(sessionId: string): Promise<HistoryResponse> 
   const url = base
     ? `${base.replace(/\/+$/, '')}/chat/messages?sessionId=${encodeURIComponent(sessionId)}`
     : `/chat/messages?sessionId=${encodeURIComponent(sessionId)}`
-  const res = await fetch(url)
+  const res = await fetch(url, { headers: authHeaders() })
   if (!res.ok) {
     let detail = `HTTP ${res.status} ${res.statusText}`
     try {
@@ -192,6 +227,54 @@ export async function fetchHistory(sessionId: string): Promise<HistoryResponse> 
     throw new ChatStreamError(detail)
   }
   return (await res.json()) as HistoryResponse
+}
+
+/** GET /chat/state —— 恢复 HITL / todos / checkpoint。 */
+export async function fetchState(sessionId: string): Promise<ChatStateResponse> {
+  const base = getRuntimeBaseUrl()
+  const url = base
+    ? `${base.replace(/\/+$/, '')}/chat/state?sessionId=${encodeURIComponent(sessionId)}`
+    : `/chat/state?sessionId=${encodeURIComponent(sessionId)}`
+  const res = await fetch(url, { headers: authHeaders() })
+  if (!res.ok) {
+    throw new ChatStreamError(`HTTP ${res.status}`)
+  }
+  return (await res.json()) as ChatStateResponse
+}
+
+/** POST /chat/cancel —— 停止后端活跃 run。 */
+export async function cancelRun(sessionId: string, runId?: string | null): Promise<void> {
+  const base = getRuntimeBaseUrl()
+  const url = base ? `${base.replace(/\/+$/, '')}/chat/cancel` : '/chat/cancel'
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ sessionId, runId: runId || undefined })
+    })
+  } catch {
+    /* 取消失败不阻断本地 abort */
+  }
+}
+
+/** GET /chat/events —— 断线后按 after 游标补齐事件。 */
+export async function fetchEvents(
+  sessionId: string,
+  after?: string | null
+): Promise<{ events: StreamEvent[]; activeRunId?: string | null; latestEventId?: string | null }> {
+  const base = getRuntimeBaseUrl()
+  const qs = new URLSearchParams({ sessionId })
+  if (after) qs.set('after', after)
+  const url = base
+    ? `${base.replace(/\/+$/, '')}/chat/events?${qs}`
+    : `/chat/events?${qs}`
+  const res = await fetch(url, { headers: authHeaders() })
+  if (!res.ok) return { events: [] }
+  return (await res.json()) as {
+    events: StreamEvent[]
+    activeRunId?: string | null
+    latestEventId?: string | null
+  }
 }
 
 /** GET /chat/sessions 的返回结构：所有持久化会话列表 */
@@ -207,7 +290,7 @@ export async function fetchSessions(): Promise<Session[]> {
   const base = getRuntimeBaseUrl()
   const url = base ? `${base.replace(/\/+$/, '')}/chat/sessions` : '/chat/sessions'
   try {
-    const res = await fetch(url)
+    const res = await fetch(url, { headers: authHeaders() })
     if (!res.ok) return []
     const data = (await res.json()) as SessionsListResponse
     return Array.isArray(data?.sessions) ? data.sessions : []

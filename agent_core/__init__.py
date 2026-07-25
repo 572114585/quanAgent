@@ -8,6 +8,7 @@ LLM 工厂、系统提示词、子 agent 定义、配置常量。沙箱安全层
     from agent_core import OUTPUT_DIR, UPLOADS_DIR, HITL_ENABLED_DEFAULT
 """
 from agent_core.config import (
+    AGENT_MODE_DEFAULT,
     HITL_ENABLED_DEFAULT,
     LOG_LEVEL,
     MAX_UPLOAD_SIZE,
@@ -18,8 +19,16 @@ from agent_core.config import (
     WORKSPACE_ROOT,
     ensure_runtime_dirs,
 )
-from agent_core.llm import create_llm, llm
-from agent_core.prompts import SYSTEM_PROMPT, research_subagent, section_writer
+from agent_core.events import SCHEMA_VERSION, make_event
+from agent_core.llm import (
+    create_llm,
+    get_llm_model_name,
+    get_llm_provider,
+    llm,
+    llm_supports_vision,
+)
+from agent_core.permissions import AgentMode, build_interrupt_on, resolve_permission
+from agent_core.prompts import SYSTEM_PROMPT, research_subagent, section_writer, system_prompt_for
 from agent_core.runtime import agent, build_agent, new_thread_id
 
 __all__ = [
@@ -28,7 +37,11 @@ __all__ = [
     "new_thread_id",
     "create_llm",
     "llm",
+    "get_llm_provider",
+    "get_llm_model_name",
+    "llm_supports_vision",
     "SYSTEM_PROMPT",
+    "system_prompt_for",
     "research_subagent",
     "section_writer",
     "WORKSPACE_ROOT",
@@ -37,7 +50,13 @@ __all__ = [
     "SKILLS_DIR",
     "UPLOADS_DIR",
     "HITL_ENABLED_DEFAULT",
+    "AGENT_MODE_DEFAULT",
     "MAX_UPLOAD_SIZE",
     "LOG_LEVEL",
     "ensure_runtime_dirs",
+    "SCHEMA_VERSION",
+    "make_event",
+    "AgentMode",
+    "resolve_permission",
+    "build_interrupt_on",
 ]

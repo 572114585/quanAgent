@@ -39,6 +39,10 @@ User says "chart" / "graph" / "图表" / "柱状图" / "折线图" / "饼图"
 ```
 User says "3D" / "三维" / "立体"
 │
+├─ User attached / referenced an OBJECT IMAGE and wants a procedural reconstruction
+│  └─ YES → stop here → use skill `object-sculptor`
+│     (image → ObjectSculptSpec → Three.js factory → output/*.html)
+│
 ├─ "I want to control every detail (lighting / material / geometry / shader)"
 │  └─ YES → Three.js
 │     ├─ Simple scene (just objects + camera)? → three-basic.html template
@@ -162,6 +166,7 @@ User says "map" / "地图" / "地理位置"
 | "关系图" / "graph" | echarts |
 | "3D 立方体" / "3D cube" | Three.js (three-basic) |
 | "3D 模型查看" / "view GLTF model" | Three.js (three-importmap + GLTFLoader) |
+| "按这张图做 3D" / "reference image → procedural Three.js" | **object-sculptor** skill |
 | "3D 设计" / "3D scene" (don't want to code) | Spline |
 | "物理动画" / "physics" | Matter.js |
 | "重力" / "gravity" | Matter.js |

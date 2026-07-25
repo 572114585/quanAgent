@@ -288,6 +288,61 @@ tr td:first-child, tr th:first-child { text-align: left; }   /* 首列左对齐 
 
 **组合建议（booktabs + highlight-row）**：paper 三线表 + medium 高亮行可以共存——但三线表的精神是"墨水只载数据"，加底色高亮会破坏纯黑美学。若必须强调某行，学术稿更推荐用**粗体字**而非底色：`tr.highlight-row td { font-weight: 700; }`，去掉 `background`。长表跨页时加 `thead { display: table-header-group }` 让每页重复表头。双栏里放表只能用 T3（窄栏容不下 T2 的阴影圆角 + 多列），T1/T2 适合单栏。
 
+### 通用防溢出规则（所有表格组件都应追加）
+
+列多或内容长的表格在双栏布局中会溢出版心。在 T1/T2/T3 的 CSS 基础上追加以下规则：
+
+```css
+/* 防溢出通用规则 — 追加到任意表格组件 CSS 后 */
+table { table-layout: fixed; }
+th, td { word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; }
+/* 宽表格跨双栏 */
+.table-full-width { column-span: all; -webkit-column-span: all; }
+/* 屏幕预览时横向滚动（不影响打印） */
+@media screen { .table-wrapper { overflow-x: auto; } }
+```
+
+HTML 用法：
+```html
+<!-- 双栏内的窄表格（列数 ≤5） -->
+<div class="no-break">
+  <table>...</table>
+</div>
+
+<!-- 跨双栏的宽表格（列数 >5） -->
+<div class="no-break table-full-width">
+  <table>...</table>
+</div>
+```
+
+### T4 自适应防溢出表格【新增】
+
+专门为列多/内容长的实验数据表设计，内置防溢出规则，适合学术论文的对比实验表。
+
+```css
+table.adaptive { table-layout: fixed; width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 8px; }
+table.adaptive th { font-weight: 700; padding: 4px 6px; text-align: center; border-top: 2px solid #000; border-bottom: 2px solid #000; word-wrap: break-word; }
+table.adaptive td { padding: 3px 6px; text-align: center; border-bottom: 1px solid #CCC; word-wrap: break-word; overflow-wrap: break-word; }
+table.adaptive tr:last-child td { border-bottom: 2px solid #000; }
+table.adaptive tr td:first-child, table.adaptive tr th:first-child { text-align: left; }
+/* 列多时缩小字号 */
+table.compact { font-size: 7px; }
+table.compact th, table.compact td { padding: 2px 4px; }
+```
+
+HTML 用法：
+```html
+<!-- 双栏内的窄表格 -->
+<div class="no-break">
+  <table class="adaptive">...</table>
+</div>
+
+<!-- 跨双栏的宽表格（列数 >5），加 compact 缩小字号 -->
+<div class="no-break table-full-width">
+  <table class="adaptive compact">...</table>
+</div>
+```
+
 ---
 
 ## 6. callout/引用类（Blockquote）

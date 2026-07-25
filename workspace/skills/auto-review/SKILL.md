@@ -1,7 +1,7 @@
 ---
 name: auto-review
 description: "文档自动审查与局部返工方法论。逐节撰写完成后,主 Agent 读取本 skill 执行 Review:对照用户需求+大纲检查 5 个维度(需求满足度/大纲吻合度/事实准确性/连贯性/完整性),生成修改计划(按严重程度排序,优先局部修改),执行返工并重新 Review 受影响节段。"
-allowed-tools: read_file write_file edit_file
+allowed-tools: read_file inspect_file write_file edit_file replace_file
 ---
 
 # Auto Review 自动审查与局部返工方法论
@@ -31,7 +31,7 @@ Step 2:Rework(返工,仅当 Review 不通过时)
 
 ### 维度 1:需求满足度
 
-对照用户原始需求(从 `/research_request.md` 或会话上下文),检查:
+对照用户原始需求(从 `/tmp/research_request.md` 或会话上下文),检查:
 
 ```
 - 用户要求覆盖的主题都覆盖了吗?
@@ -48,7 +48,7 @@ Step 2:Rework(返工,仅当 Review 不通过时)
 - 大纲规划的章节都写了吗?有没有缺节?
 - 每节实际内容与大纲规划的摘要一致吗?有没有跑题?
 - 大纲规划的"呈现方式"(图表/流程图/对比矩阵)在 md 中有对应占位符吗?
-- 预计字数与实际字数差距过大吗?(差距 >50% 需关注)
+- 预计字数与实际字数：用 `inspect_file` 读取实际字符数；实际 < 预计的 **70%** → 记为 **P2 字数不足**（必须返工扩写），不再当作 P5
 ```
 
 ### 维度 3:事实准确性
@@ -95,10 +95,10 @@ Step 2:Rework(返工,仅当 Review 不通过时)
 |---|---|---|---|
 | **P0 事实错误** | 数据错误/编造/来源缺失 | "市场规模 500 亿"无来源 | 必须返工,补来源或删除 |
 | **P1 需求缺失** | 用户要求的重点未覆盖 | 用户要"对比框架",实际没写 | 必须返工,补写缺失节 |
-| **P2 大纲偏离** | 跑题或缺节 | 大纲有"技术原理",实际没写 | 必须返工,补写或调大纲 |
+| **P2 大纲偏离/字数不足** | 跑题、缺节、或实际字数 < 预计 70% | 预计 2000 字实际 500 字 | 必须返工,补写或扩写 |
 | **P3 连贯问题** | 矛盾/术语不统一/过渡缺失 | 前后数据不一致 | 返工受影响节 |
 | **P4 完整性问题** | 占位符/TODO 残留 | `[此处需要补充]` 未处理 | 返工补全或标注 |
-| **P5 表述问题** | 字数偏差/措辞不佳 | 预计 1500 字实际 300 字 | 可在 HTML 阶段顺手修 |
+| **P5 表述问题** | 措辞不佳/小幅润色 | 个别句子生硬 | 可在 HTML 阶段顺手修 |
 
 ### 返工决策
 
@@ -107,11 +107,12 @@ Step 2:Rework(返工,仅当 Review 不通过时)
 - 仅 P3/P4 → 返工受影响节段
 - 仅 P5 → 跳过 Rework,在 HTML 阶段修正
 - 全部通过 → 直接进入 HTML 制作
+- 注意：字数不足属于 P2，禁止当作 P5 跳过
 ```
 
 ## D. Review 报告格式
 
-写入 `/tmp/review_report.md`:
+用 `replace_file` 写入 `/tmp/review_report.md`:
 
 ```markdown
 # Review Report
@@ -219,10 +220,10 @@ Step 2:Rework(返工,仅当 Review 不通过时)
 2. 执行 Step 1 Review:
    a. read_file /tmp/outline.md 获取大纲
    b. read_file /tmp/sections/*.md 获取各节内容
-   c. 回顾用户原始需求(从会话上下文或 /research_request.md)
+   c. 回顾用户原始需求(从会话上下文或 /tmp/research_request.md)
    d. 按 5 维度逐节审查
    e. 生成问题清单,按严重程度分级
-   f. write_file /tmp/review_report.md
+   f. replace_file /tmp/review_report.md
 3. 判断返工决策:
    - 全部通过 → 跳过 Rework,进入 HTML 制作
    - 存在 P0/P1/P2 → 进入 Step 2 Rework
@@ -232,7 +233,7 @@ Step 2:Rework(返工,仅当 Review 不通过时)
    b. 按问题类型选择处理方式(edit_file / task(section-writer))
    c. 执行修改
    d. 重新 Review 受影响节段
-   e. 更新 /tmp/review_report.md
+   e. 用 replace_file 更新 /tmp/review_report.md
 5. Review 通过后 → 进入 HTML 制作阶段(读 md-to-pdf SKILL.md)
 ```
 

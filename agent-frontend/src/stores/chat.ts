@@ -4,8 +4,8 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup, KbReference } from '@/types/domain'
-import { sendChatMessage, resumeChat, fetchHistory } from '@/api/chat'
+import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup, KbReference, WebReference, AgentMode } from '@/types/domain'
+import { sendChatMessage, resumeChat, fetchHistory, cancelRun, fetchState } from '@/api/chat'
 
 export type ChatMessage = Message
 
@@ -74,6 +74,43 @@ function parseKbRefsFromOutput(output: string | undefined): KbReference[] | null
   }
 }
 
+/**
+ * 从 web_search / web_fetch 的 output 里解析联网引用来源。
+ * 后端附加 `<!--WEB_REFS:[{title,url,snippet,provider?}]-->`。
+ */
+function parseWebRefsFromOutput(output: string | undefined): WebReference[] | null {
+  if (!output) return null
+  const match = output.match(/<!--WEB_REFS:(.+?)-->/s)
+  if (!match) return null
+  try {
+    const arr = JSON.parse(match[1])
+    if (!Array.isArray(arr)) return null
+    const refs: WebReference[] = []
+    for (const item of arr) {
+      if (item && typeof item === 'object' && item.url) {
+        refs.push({
+          title: String(item.title ?? ''),
+          url: String(item.url ?? ''),
+          snippet: String(item.snippet ?? ''),
+          provider: item.provider != null ? String(item.provider) : undefined,
+        })
+      }
+    }
+    return refs
+  } catch {
+    return null
+  }
+}
+
+function mergeWebRefs(msg: ChatMessage, refs: WebReference[]) {
+  if (!msg.webReferences) msg.webReferences = []
+  for (const r of refs) {
+    if (!msg.webReferences.find((x) => x.url === r.url)) {
+      msg.webReferences.push(r)
+    }
+  }
+}
+
 interface SendOptions {
   attachments?: Attachment[]
 }
@@ -83,13 +120,21 @@ export const useChatStore = defineStore('chat', () => {
   const messagesBySession = ref<Record<string, ChatMessage[]>>({})
   /** Abort controllers per session for in-flight streams. */
   const aborters = ref<Record<string, AbortController | null>>({})
+  /** 当前活跃 runId / 最后收到的 eventId（按 session） */
+  const runIdBySession = ref<Record<string, string | null>>({})
+  const lastEventIdBySession = ref<Record<string, string | null>>({})
   /** Phase 3 placeholder: 上传中的文件。Phase 4/5 进一步持久化。 */
   const pendingAttachments = ref<Record<string, Attachment[]>>({})
   /** Agent 通过 write_todos 工具维护的待办列表（按 session 存储，整体替换语义）。 */
   const todosBySession = ref<Record<string, TodoItem[]>>({})
   /** 子智能体任务（task() 触发）按 session 存储；并行子 agent = 数组多元素。 */
   const subagentTasksBySession = ref<Record<string, SubagentTask[]>>({})
+  /** Agent / Plan 模式（发给后端 mode 字段） */
+  const agentMode = ref<AgentMode>('agent')
 
+  function setAgentMode(mode: AgentMode) {
+    agentMode.value = mode === 'plan' ? 'plan' : 'agent'
+  }
   function list(sessionId: string): ChatMessage[] {
     return messagesBySession.value[sessionId] ?? []
   }
@@ -194,6 +239,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function stop(sessionId: string) {
+    const runId = runIdBySession.value[sessionId]
+    void cancelRun(sessionId, runId)
     const c = aborters.value[sessionId]
     if (c) c.abort()
     aborters.value[sessionId] = null
@@ -230,6 +277,28 @@ export const useChatStore = defineStore('chat', () => {
       }
       if (data.todos?.length && !todosBySession.value[sessionId]) {
         todosBySession.value[sessionId] = data.todos
+      }
+      // HITL 恢复：messages 已可能带 awaiting_approval；否则再拉 /chat/state
+      let groups = data.interruptGroups
+      if (data.hasInterrupt && (!groups || groups.length === 0)) {
+        try {
+          const state = await fetchState(sessionId)
+          groups = state.interruptGroups
+        } catch {
+          /* ignore */
+        }
+      }
+      if (data.hasInterrupt && groups && groups.length > 0) {
+        const arr = messagesBySession.value[sessionId]
+        if (arr) {
+          for (let i = arr.length - 1; i >= 0; i--) {
+            if (arr[i].role === 'assistant') {
+              arr[i].status = 'awaiting_approval'
+              arr[i].pendingInterruptGroups = groups
+              break
+            }
+          }
+        }
       }
     } catch (err) {
       console.error('[chat] loadHistory failed', err)
@@ -284,6 +353,7 @@ export const useChatStore = defineStore('chat', () => {
         {
           sessionId,
           message: text,
+          mode: agentMode.value,
           attachments: opts.attachments?.map((a) => ({
             id: a.id,
             remoteUrl: a.remoteUrl ?? a.previewUrl ?? '',
@@ -294,8 +364,13 @@ export const useChatStore = defineStore('chat', () => {
         },
         controller.signal,
         {
-          onStart: () => {
+          onStart: (_messageId, meta) => {
             msg.status = 'streaming'
+            if (meta?.runId) runIdBySession.value[sessionId] = meta.runId
+          },
+          onEventMeta: ({ eventId, runId }) => {
+            if (runId) runIdBySession.value[sessionId] = runId
+            if (eventId) lastEventIdBySession.value[sessionId] = eventId
           },
           onDelta: (delta) => {
             msg.content += delta
@@ -369,6 +444,10 @@ export const useChatStore = defineStore('chat', () => {
                   }
                 }
               }
+              if (payload.name === 'web_search' || payload.name === 'web_fetch') {
+                const refs = parseWebRefsFromOutput(payload.output)
+                if (refs && refs.length > 0) mergeWebRefs(msg, refs)
+              }
               finishSubagentStep(sessionId, payload.subagentId, payload)
               return
             }
@@ -438,6 +517,9 @@ export const useChatStore = defineStore('chat', () => {
       }
     } finally {
       aborters.value[sessionId] = null
+      if (msg.status !== 'awaiting_approval' && msg.status !== 'streaming') {
+        runIdBySession.value[sessionId] = null
+      }
       const msgs = messagesBySession.value[sessionId]
       if (msgs) {
         sessions.touch(sessionId, { messageCount: msgs.length })
@@ -463,12 +545,12 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
     if (!lastApprovalMsg) return
-    // arr 是 reactive 数组，arr[i] 返回的是代理对象，可直接操作
     const msg = lastApprovalMsg
 
+    // 失败时恢复审批 UI，避免「已点批准但没执行」的错觉
+    const savedPending = msg.pendingInterruptGroups
     msg.status = 'streaming'
     msg.pendingInterruptGroups = undefined
-    // 汇总各组决定用于视觉反馈
     const flatDecisions = groups.flatMap((g) => g.decisions)
     if (flatDecisions.length > 0) {
       msg.hitlNote = `✅ 用户决定：${flatDecisions
@@ -481,7 +563,19 @@ export const useChatStore = defineStore('chat', () => {
     aborters.value[sessionId] = controller
 
     try {
-      await resumeChat(sessionId, groups, controller.signal, {
+      await resumeChat(
+        sessionId,
+        groups,
+        controller.signal,
+        {
+        onStart: (_messageId, meta) => {
+          msg.status = 'streaming'
+          if (meta?.runId) runIdBySession.value[sessionId] = meta.runId
+        },
+        onEventMeta: ({ eventId, runId }) => {
+          if (runId) runIdBySession.value[sessionId] = runId
+          if (eventId) lastEventIdBySession.value[sessionId] = eventId
+        },
         onDelta: (delta) => {
           msg.content += delta
         },
@@ -501,14 +595,12 @@ export const useChatStore = defineStore('chat', () => {
           })
         },
         onToolCall: (call) => {
-          // write_todos：解析更新待办列表，不进入 toolCalls（与 send 保持一致）
           if (call.name === 'write_todos') {
             const todos = parseTodosFromArgs(call.args)
             if (todos) todosBySession.value[sessionId] = todos
             return
           }
           if (call.name === 'task') return
-          // 子智能体内部工具调用 → 进入对应子 agent 卡片的 steps
           if (call.subagentId) {
             addSubagentStep(sessionId, call.subagentId, {
               id: call.callId ?? uid('tc'),
@@ -526,11 +618,9 @@ export const useChatStore = defineStore('chat', () => {
           })
         },
         onToolResult: (payload) => {
-          // write_todos 已在 onToolCall 处理，跳过避免新建记录污染工具列表
           if (payload.name === 'write_todos') return
           if (payload.name === 'task') return
           if (payload.subagentId) {
-            // kb_search: 同 send 流程,解析引用元数据
             if (payload.name === 'kb_search') {
               const refs = parseKbRefsFromOutput(payload.output)
               if (refs && refs.length > 0) {
@@ -541,6 +631,10 @@ export const useChatStore = defineStore('chat', () => {
                   }
                 }
               }
+            }
+            if (payload.name === 'web_search' || payload.name === 'web_fetch') {
+              const refs = parseWebRefsFromOutput(payload.output)
+              if (refs && refs.length > 0) mergeWebRefs(msg, refs)
             }
             finishSubagentStep(sessionId, payload.subagentId, payload)
             return
@@ -597,16 +691,40 @@ export const useChatStore = defineStore('chat', () => {
         onDone: () => {
           if (msg.status === 'streaming') msg.status = 'complete'
         }
-      })
+      },
+        { mode: agentMode.value }
+      )
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         if (msg.status === 'streaming') msg.status = 'cancelled'
       } else {
         msg.status = 'error'
         msg.error = String(err?.message ?? err)
+        // resume 失败：恢复待审批 UI，或从 /chat/state 拉取
+        try {
+          const state = await fetchState(sessionId)
+          if (state.interruptGroups && state.interruptGroups.length > 0) {
+            msg.pendingInterruptGroups = state.interruptGroups
+            msg.status = 'awaiting_approval'
+            msg.hitlNote = undefined
+          } else if (savedPending && savedPending.length > 0) {
+            msg.pendingInterruptGroups = savedPending
+            msg.status = 'awaiting_approval'
+            msg.hitlNote = undefined
+          }
+        } catch {
+          if (savedPending && savedPending.length > 0) {
+            msg.pendingInterruptGroups = savedPending
+            msg.status = 'awaiting_approval'
+            msg.hitlNote = undefined
+          }
+        }
       }
     } finally {
       aborters.value[sessionId] = null
+      if (msg.status !== 'awaiting_approval' && msg.status !== 'streaming') {
+        runIdBySession.value[sessionId] = null
+      }
       const msgs = messagesBySession.value[sessionId]
       if (msgs) {
         sessions.touch(sessionId, { messageCount: msgs.length })
@@ -731,6 +849,8 @@ export const useChatStore = defineStore('chat', () => {
     pendingAttachments,
     todosBySession,
     subagentTasksBySession,
+    agentMode,
+    setAgentMode,
     list,
     append,
     setStatus,
