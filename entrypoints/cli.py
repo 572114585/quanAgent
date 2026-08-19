@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessageChunk, ToolMessage
 from langgraph.types import Command
 
 from agent_core import build_agent
+from agent_core.config import LANGFUSE_ENABLED
 from agent_core.events import SCHEMA_VERSION, make_event
 from agent_core.multimodal import build_user_content, to_image_part
 from agent_core.permissions import AgentMode
@@ -47,7 +48,9 @@ def log_tool_call(msg_chunk, *, json_mode: bool = False) -> None:
     for tc in tool_calls:
         idx = tc.get("index", 0)
         if idx not in _pending_tool_calls:
-            _pending_tool_calls[idx] = {"name": "", "args": "", "id": ""}
+            _pending_tool_calls[idx] = {
+                "name": "", "args": "", "id": "", "start_emitted": False,
+            }
         if tc.get("name"):
             _pending_tool_calls[idx]["name"] += tc["name"]
         if tc.get("args"):
@@ -56,6 +59,19 @@ def log_tool_call(msg_chunk, *, json_mode: bool = False) -> None:
             _pending_tool_calls[idx]["id"] = tc["id"]
 
     if not isinstance(msg_chunk, ToolMessage):
+        if json_mode:
+            for tc in _pending_tool_calls.values():
+                if tc["name"] and not tc["start_emitted"]:
+                    emit_ndjson(make_event(
+                        "tool_call",
+                        callId=tc.get("id") or f"tc_{uuid.uuid4().hex[:8]}",
+                        name=tc["name"],
+                        # Arguments may still be streaming and can contain
+                        # sensitive prompts. The completion event carries only
+                        # a bounded result preview.
+                        args="",
+                    ))
+                    tc["start_emitted"] = True
         return
 
     name = msg_chunk.name or ""
@@ -72,14 +88,16 @@ def log_tool_call(msg_chunk, *, json_mode: bool = False) -> None:
         msg_chunk.content
     )
     if json_mode:
-        emit_ndjson(
-            make_event(
+        matched = next(
+            (tc for tc in _pending_tool_calls.values() if tc["name"] == name), None
+        )
+        if not matched or not matched.get("start_emitted"):
+            emit_ndjson(make_event(
                 "tool_call",
                 callId=call_id or f"tc_{uuid.uuid4().hex[:8]}",
                 name=name,
-                args=args_str,
-            )
-        )
+                args="",
+            ))
         emit_ndjson(
             make_event(
                 "tool_result",
@@ -374,14 +392,15 @@ def main(argv: list[str] | None = None) -> None:
         _print_skill_check()
         print(f"[CLI] mode={mode} hitl={hitl} schemaVersion={SCHEMA_VERSION}")
 
-    try:
-        from langfuse import get_client
-        from langfuse.langchain import CallbackHandler
+    if LANGFUSE_ENABLED:
+        try:
+            from langfuse import get_client
+            from langfuse.langchain import CallbackHandler
 
-        get_client()
-        _ = CallbackHandler  # 可选；交互路径不强依赖
-    except Exception:  # noqa: BLE001
-        pass
+            get_client()
+            _ = CallbackHandler  # 可选；交互路径不强依赖
+        except Exception:  # noqa: BLE001
+            pass
 
     session_id = str(uuid.uuid4())
 

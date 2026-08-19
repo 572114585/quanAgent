@@ -38,8 +38,11 @@ class DuckDuckGoProvider(BaseSearchProvider):
 
     async def search(self, query: SearchQuery) -> list[SearchResult]:
         loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(
-            None, _ddgs_search, query.query, query.max_results, query.topic
+        raw = await asyncio.wait_for(
+            loop.run_in_executor(
+                None, _ddgs_search, query.query, query.max_results, query.topic
+            ),
+            timeout=6.0,
         )
 
         results: list[SearchResult] = []

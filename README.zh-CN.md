@@ -9,7 +9,7 @@
 ### 核心特性
 
 - 🤖 **通用 Agent 内核**：基于 DeepAgents，支持任务规划、工具调度、状态管理
-- 🔌 **可插拔 Skills 系统**：MinerU 文档提取、Word/Excel 处理、Markdown 转 PDF、日报、网页设计、视频演示等技能扩展
+- 🔌 **可插拔 Skills 系统**：MinerU 文档提取、Word/Excel 处理、Markdown 转 PDF、日报、编辑级图表（`diagram-design`）、网页设计、视频演示等技能扩展
 - 🌊 **SSE 流式响应**：实时推送对话内容、工具调用状态、思考过程，思考与最终答案分离渲染；事件契约 `schemaVersion: 1`（与 CLI `--format streaming-json` 共用）
 - 👤 **人机协作（HITL）**：高风险 shell（解释器内联 / 联网 / 安装 / 未知命令）需确认；**批准仅针对本次调用**；硬拒绝仍不可绕过
 - 🛡️ **工具级权限 + 工作区 Auto**：`write_file`/`edit_file` 默认放行；`execute` 按命令 `auto`/`ask`/`deny` 分类；Plan 模式只规划；渠道默认 deny 危险工具
@@ -20,10 +20,11 @@
 - 🖥️ **跨平台前端**：Web + 桌面（Tauri 2）+ 移动端，基于 Vue 3 + TypeScript
 - 🔧 **可配置 API 地址**：前端设置面板可动态配置后端服务地址
 - 🔐 **命令安全层（非 OS 沙盒）**：软策略（HITL 批准或 auto 可绕过）+ 硬拒绝 + 写路径边界 + 路径改写；当前是字符串策略，不是 OS 进程隔离
-- 🧠 **多 LLM Provider**：支持 agnes（默认）/ deepseek 通过环境变量切换
+- 🧠 **多 LLM Provider**：支持 MiMo（当前默认）/ agnes / deepseek 等，通过环境变量切换
 - 🔎 **多搜索 Provider 失败回退**：Tavily → Brave → Serper → DuckDuckGo，额度错误冷却 1 小时，DuckDuckGo 兜底
 - 💾 **SQLite 任务计划持久化**：thread 状态（messages / todos / files / pending interrupts）跨进程重启可恢复，HITL resume 跨重启生效
 - 🧩 **子智能体可观测性**：`task()` 调用通过 `subagent_start` / `subagent_done` 事件把子智能体任务及其嵌套工具调用步骤流式推送给前端任务面板
+- 🧭 **可审计 Research V2**：结构化研究契约、带依赖与独立预算的研究单元、全局候选池、保留溯源的证据/主张账本、加权覆盖率、冲突/新颖性监督，以及 fail-closed 引用校验
 
 ## 技术栈
 
@@ -67,8 +68,14 @@ pip install -r requirement.txt
 2. 配置环境变量（可选，创建 `.env` 文件）：
 
 ```env
-# === LLM Provider 切换（agnes | deepseek | sensenova | siliconflow | volcengine）===
+# === LLM Provider 切换（agnes | deepseek | sensenova | siliconflow | volcengine | mimo）===
 LLM_PROVIDER=agnes
+
+# 小米 MiMo Token Plan（OpenAI 兼容；tp-xxxxx）
+# LLM_PROVIDER=mimo
+# MIMO_MODEL=mimo-v2.5-pro
+# MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1
+# MIMO_API_KEY=your-mimo-token
 
 # agnes 配置（默认）
 AGNES_MODEL=agnes-2.0-flash
@@ -120,6 +127,7 @@ LOG_LEVEL=INFO
 # CLI --always-approve 仅建议在外层已有容器/虚拟机隔离时使用
 
 # === 可选：Langfuse 可观测性 ===
+# LANGFUSE_TRACING_ENABLED=true
 # LANGFUSE_PUBLIC_KEY=...
 # LANGFUSE_SECRET_KEY=...
 # LANGFUSE_HOST=...
@@ -140,6 +148,21 @@ python run.py
 - `POST /chat/resume` — HITL 中断后提交审批决定（可选 `mode`）
 - `GET /uploads/<filename>` — 上传文件静态访问
 - `GET /output/<filename>` — 生成产物静态访问
+
+### 可审计 Research V2
+
+`POST /research` 创建可持久恢复的研究任务。研究契约可声明决策用途、受众、时间范围、地域、术语定义、必答维度、排除项、来源偏好、输出 schema 与明确的输出要求。deep/wide 模式必须在定向检索后修订并批准计划，才能进入正式采集；研究单元支持重要性权重、前置依赖、验收标准、必需来源类型、开放缺口和独立的搜索/抓取预算。
+
+研究工作台和 `GET /research/{run_id}` 同时展示加权/未加权覆盖率、来源质量、未使用证据与新颖性队列、重复来源簇、主张冲突和引用链。高优先级缺口、必需来源类型、未决冲突或无支撑的重要主张存在时，报告就绪判定保持 fail-closed。
+
+主要接口还包括 `GET /research/{run_id}/sources`、`/claims`、`/passages`、`/advanced`，以及 `POST /research/{run_id}/plan/revise`、`/approve`、`/verify`、`/control`。持久状态位于 `workspace/state/research/<run_id>/`。
+
+可复现评测适配器位于 `evals/`。已下载公开数据集后可运行：
+
+```bash
+```
+
+DRB2 适配器只把公开任务与禁用来源清单交给规划器；隐藏 rubric 标签仅用于生成后的评估，避免评测泄漏。
 
 **CLI（可选）：**
 
@@ -220,7 +243,7 @@ d:\project
 ├── agent_core/                  # agent 核心装配包
 │   ├── config.py                # 统一配置：路径常量 + LLM/HITL/上传/搜索开关
 │   ├── llm.py                   # create_llm() + llm 单例
-│   ├── prompts.py               # SYSTEM_PROMPT + research_subagent 定义
+│   ├── prompts.py               # SYSTEM_PROMPT + section-writer 定义
 │   └── runtime.py               # build_agent() 工厂 + agent 单例 + DualSqliteSaver
 ├── sandbox/                     # ~1200 行 Shell 沙箱（从原 agent_runtime.py 拆出）
 │   ├── backend.py               # _SkillsShellBackend（路径改写 + 编码兼容）
@@ -256,6 +279,7 @@ d:\project
 │   │   ├── word-docx/           # Word 处理
 │   │   ├── md-to-pdf/           # Markdown 转 PDF（含多套样式配方）
 │   │   ├── daily-report/        # 日报生成
+│   │   ├── diagram-design/      # 编辑级 HTML/SVG 图表（架构图、流程图等）
 │   │   ├── web-design-engineer/ # 网页设计
 │   │   └── web-video-presentation/ # 视频演示
 │   ├── uploads/                 # 用户上传文件存储
@@ -290,7 +314,7 @@ d:\project
 - [x] HITL 人机协作审批流程（高风险 `execute`；`web_search`/`web_fetch` 默认 allow）
 - [x] 前端可配置 API Base URL
 - [x] 微信 / 企业微信渠道桥接
-- [x] Skills 系统（mineru、excel-xlsx、word-docx、md-to-pdf、daily-report、web-design-engineer、web-video-presentation）
+- [x] Skills 系统（mineru、excel-xlsx、word-docx、md-to-pdf、daily-report、diagram-design、web-design-engineer、web-video-presentation）
 - [x] **思考与最终答案分离**：基于消息结构路由，`thinking_delta` 进折叠区，`delta` 进主答案区
 - [x] **产物自动检测**：对话前后对比 `output/` 目录，新增文件通过 `artifact` 事件推送前端
 - [x] **命令安全层**（`sandbox/` + `agent_core/execute_policy.py`）：
@@ -300,7 +324,7 @@ d:\project
   - 写路径边界（仅 `output/`、`tmp/`；`skills/` 只读）+ 路径改写 + utf-8/gbk 双解码
   - 子 agent 注入同一 Hooks，修复「批准后 trust 仍为 strict」
   - **不是** OS 级进程沙盒
-- [x] 多 LLM Provider 切换（agnes 默认 / deepseek）
+- [x] 多 LLM Provider 切换（MiMo 默认 / agnes / deepseek 等）
 - [x] SSE ping 保活（15 秒间隔）
 - [x] TypeScript 完整 SSE 事件类型处理（无 default case）
 - [x] Langfuse 可观测性集成（未配置时自动降级）
@@ -309,6 +333,7 @@ d:\project
 - [x] **多搜索 Provider 失败回退**：`Tavily → Brave → Serper → DuckDuckGo` 链路；API key 留空的 provider 直接跳过不入链路；额度错误触发 1 小时冷却；非额度错误跳过不冷却；DuckDuckGo 兜底
 - [x] **子智能体可观测性**：后端开启 `subgraphs=True`，通过 `subagent_start` / `subagent_done` SSE 事件把子智能体任务及嵌套 `tool_call` / `tool_result` 步骤（携带 `subagentId`）流式推送给前端；前端 `FloatingTodoList` 按 `subagentId` 聚合渲染子智能体卡片与嵌套步骤
 - [x] **daily-report 日报 Skill** 已加入 Skill 库
+- [x] **diagram-design 图表 Skill** 已加入 Skill 库（编辑级独立 HTML/SVG：架构图、流程图、时序图等）
 
 ### 🔧 进行中 / 待完善
 

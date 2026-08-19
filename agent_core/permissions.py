@@ -27,7 +27,7 @@ _READ_TOOLS = frozenset({
     "glob",
     "grep",
     "inspect_file",
-    "check_research_material",
+    "check_final_report",
 })
 
 # 写文件类工具
@@ -47,7 +47,6 @@ _PLANNING_TOOLS = frozenset({
 _ASK_USER_TOOLS = frozenset({
     "ask_user_question",
 })
-
 
 def _env_permission(name: str, default: Permission) -> Permission:
     raw = os.getenv(name, "").strip().lower()
@@ -91,8 +90,7 @@ def resolve_permission(
             return "allow"
         if name in _WRITE_TOOLS or name == "execute":
             return "deny"
-        if name in ("get_current_time", "render_html", "view_image", "web_search", "web_fetch",
-                    "kb_search", "kb_add_document"):
+        if name in {"get_current_time", "render_html", "view_image", "web_search", "web_fetch"}:
             return "allow"
         return "deny"
 
@@ -111,7 +109,7 @@ def resolve_permission(
         return "allow"
     if name in ("get_current_time", "render_html", "view_image"):
         return "allow"
-    if name in ("web_search", "web_fetch", "kb_search", "kb_add_document"):
+    if name in {"web_search", "web_fetch"}:
         return "allow"
 
     if name == "execute":

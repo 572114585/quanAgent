@@ -257,26 +257,6 @@ export async function cancelRun(sessionId: string, runId?: string | null): Promi
   }
 }
 
-/** GET /chat/events —— 断线后按 after 游标补齐事件。 */
-export async function fetchEvents(
-  sessionId: string,
-  after?: string | null
-): Promise<{ events: StreamEvent[]; activeRunId?: string | null; latestEventId?: string | null }> {
-  const base = getRuntimeBaseUrl()
-  const qs = new URLSearchParams({ sessionId })
-  if (after) qs.set('after', after)
-  const url = base
-    ? `${base.replace(/\/+$/, '')}/chat/events?${qs}`
-    : `/chat/events?${qs}`
-  const res = await fetch(url, { headers: authHeaders() })
-  if (!res.ok) return { events: [] }
-  return (await res.json()) as {
-    events: StreamEvent[]
-    activeRunId?: string | null
-    latestEventId?: string | null
-  }
-}
-
 /** GET /chat/sessions 的返回结构：所有持久化会话列表 */
 export interface SessionsListResponse {
   sessions: Session[]

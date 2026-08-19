@@ -9,7 +9,7 @@ This project follows a "full-stack microservices + Skills" architecture. The cor
 ### Core Features
 
 - 🤖 **General Agent Kernel** — built on DeepAgents, supports task planning, tool scheduling, and state management
-- 🔌 **Pluggable Skills System** — MinerU document extraction, Word/Excel processing, Markdown-to-PDF, daily reports, web design, video presentation, and more
+- 🔌 **Pluggable Skills System** — MinerU document extraction, Word/Excel processing, Markdown-to-PDF, daily reports, editorial diagrams (`diagram-design`), web design, video presentation, and more
 - 🌊 **SSE Streaming Response** — real-time streaming of conversation content, tool call status, and thinking process; thinking content and final answer are rendered separately
 - 👤 **Human-in-the-Loop (HITL)** — high-risk shell (interpreter inline / network / install / unknown) needs confirm; **approve once for this call**; hard denies still apply
 - 🛡️ **Tool-level permissions + workspace Auto** — writes auto-allowed in workspace; `execute` classified as `auto`/`ask`/`deny`; Plan mode plans only; channels deny dangerous tools
@@ -20,10 +20,11 @@ This project follows a "full-stack microservices + Skills" architecture. The cor
 - 🖥️ **Cross-Platform Frontend** — Web + Desktop (Tauri 2) + Mobile, based on Vue 3 + TypeScript
 - 🔧 **Configurable API URL** — backend address can be set dynamically from the frontend settings panel
 - 🔐 **Command safety layer (not an OS sandbox)** — soft policy (bypass after HITL or auto class) + hard deny + write-path boundary + path rewriting; string policy, not OS process isolation
-- 🧠 **Multi-LLM Provider** — switch between agnes (default) and deepseek via environment variables
+- 🧠 **Multi-LLM Provider** — switch between MiMo (current default), agnes, deepseek, and others via environment variables
 - 🔎 **Multi-Provider Search Failover** — Tavily → Brave → Serper → DuckDuckGo, with 1-hour cooldown on quota errors and DuckDuckGo as the final fallback
 - 💾 **SQLite Task Plan Persistence** — thread state (messages / todos / files / pending interrupts) survives process restarts; HITL resume works across restarts
 - 🧩 **Subagent Observability** — `task()` calls stream `subagent_start` / `subagent_done` events with nested tool-call steps to the frontend task panel
+- 🧭 **Auditable Research V2** — structured research contracts, dependency-aware units and budgets, global candidate pooling, provenance-preserving evidence/claim ledgers, weighted coverage, conflict/novelty supervision, and fail-closed citation verification
 
 ## Tech Stack
 
@@ -67,8 +68,14 @@ pip install -r requirement.txt
 2. Configure environment variables (optional, create a `.env` file):
 
 ```env
-# === LLM Provider switch (agnes | deepseek | sensenova | siliconflow | volcengine) ===
+# === LLM Provider switch (agnes | deepseek | sensenova | siliconflow | volcengine | mimo) ===
 LLM_PROVIDER=agnes
+
+# Xiaomi MiMo Token Plan (OpenAI-compatible; tp-xxxxx)
+# LLM_PROVIDER=mimo
+# MIMO_MODEL=mimo-v2.5-pro
+# MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1
+# MIMO_API_KEY=your-mimo-token
 
 # agnes config (default)
 AGNES_MODEL=agnes-2.0-flash
@@ -119,6 +126,7 @@ LOG_LEVEL=INFO
 # CLI --always-approve only when outer isolation (container/VM) already exists
 
 # === Optional: Langfuse observability ===
+# LANGFUSE_TRACING_ENABLED=true
 # LANGFUSE_PUBLIC_KEY=...
 # LANGFUSE_SECRET_KEY=...
 # LANGFUSE_HOST=...
@@ -139,6 +147,7 @@ Service runs at `http://localhost:8000` by default.
 - `POST /chat/resume` — submit HITL approval decision after an interrupt
 - `GET /uploads/<filename>` — static access to uploaded files
 - `GET /output/<filename>` — static access to generated artifacts
+
 
 ### Frontend Startup
 
@@ -210,7 +219,7 @@ d:\project
 ├── agent_core/                  # agent core assembly package
 │   ├── config.py                # unified config: paths, LLM/HITL/upload/search toggles
 │   ├── llm.py                   # create_llm() + llm singleton
-│   ├── prompts.py               # SYSTEM_PROMPT + research_subagent definition
+│   ├── prompts.py               # SYSTEM_PROMPT + section-writer definition
 │   └── runtime.py               # build_agent() factory + agent singleton + DualSqliteSaver
 ├── sandbox/                     # ~1200-line shell sandbox (split from former agent_runtime.py)
 │   ├── backend.py               # _SkillsShellBackend (path rewriting + encoding)
@@ -246,6 +255,7 @@ d:\project
 │   │   ├── word-docx/           # Word processing
 │   │   ├── md-to-pdf/           # Markdown → PDF (multiple style recipes)
 │   │   ├── daily-report/        # Daily report generation
+│   │   ├── diagram-design/      # Editorial HTML/SVG diagrams (architecture, flowchart, …)
 │   │   ├── web-design-engineer/ # Web design
 │   │   └── web-video-presentation/ # Video presentation
 │   ├── uploads/                 # user uploaded files
@@ -280,7 +290,7 @@ d:\project
 - [x] HITL approval flow (high-risk `execute`; `web_search`/`web_fetch` default allow)
 - [x] Frontend-configurable API Base URL
 - [x] WeChat / WeCom channel bridging
-- [x] Skills system (mineru, excel-xlsx, word-docx, md-to-pdf, daily-report, web-design-engineer, web-video-presentation)
+- [x] Skills system (mineru, excel-xlsx, word-docx, md-to-pdf, daily-report, diagram-design, web-design-engineer, web-video-presentation)
 - [x] **Thinking / final answer separation** — message-structure-based routing; `thinking_delta` → collapsible area, `delta` → main answer area
 - [x] **Automatic artifact detection** — pre/post conversation diff of `output/`; new files pushed via `artifact` events
 - [x] **Command safety layer** (`sandbox/` + `agent_core/execute_policy.py`):
@@ -289,7 +299,7 @@ d:\project
   - **Hard deny** (never bypassed): command substitution, cwd escape, catastrophic patterns
   - Write-path boundary (`output/`/`tmp/` only) + path rewriting; Hooks injected into subagents
   - **Not** an OS-level process sandbox
-- [x] Multi-LLM Provider switch (agnes default / deepseek)
+- [x] Multi-LLM Provider switch (MiMo default / agnes / deepseek, etc.)
 - [x] SSE ping keepalive (15s interval)
 - [x] TypeScript SSE event handling (no default case in switch)
 - [x] Langfuse observability integration (auto-degrades when unconfigured)
@@ -298,6 +308,7 @@ d:\project
 - [x] **Multi-provider search failover** — `Tavily → Brave → Serper → DuckDuckGo` chain; providers with empty API keys are skipped; quota errors trigger 1-hour cooldown; non-quota errors skip without cooldown; DuckDuckGo as final fallback
 - [x] **Subagent observability** — backend opens `subgraphs=True` and emits `subagent_start` / `subagent_done` SSE events with nested `tool_call` / `tool_result` steps (carrying `subagentId`); frontend `FloatingTodoList` renders per-`subagentId` cards with nested steps
 - [x] **daily-report Skill** added to the Skill library
+- [x] **diagram-design Skill** — editorial standalone HTML/SVG diagrams (architecture, flowchart, sequence, …)
 
 ### 🔧 In Progress / TODO
 
@@ -305,7 +316,7 @@ d:\project
 - [ ] More Skill implementations (PPT generation, data analysis, chart generation, etc.)
 - [ ] Mobile adaptation polish
 - [ ] User authentication & permission system
-- [ ] Knowledge base retrieval integration
+- [ ] Fast web search integration
 - [ ] Production deployment (object storage, remote sandbox, etc.)
 
 ### 📋 Known Issues & Notes

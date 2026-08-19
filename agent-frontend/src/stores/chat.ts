@@ -4,7 +4,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup, KbReference, WebReference, AgentMode } from '@/types/domain'
+import type { Message, MessageStatus, Attachment, ArtifactFile, TodoItem, TodoStatus, SubagentTask, ResumeGroup, WebReference, AgentMode } from '@/types/domain'
 import { sendChatMessage, resumeChat, fetchHistory, cancelRun, fetchState } from '@/api/chat'
 
 export type ChatMessage = Message
@@ -43,41 +43,6 @@ function parseTodosFromArgs(args: string | Record<string, any> | undefined): Tod
   return todos
 }
 
-/**
- * 从 kb_search 的 output 里解析引用来源元数据。
- * 后端在 output 末尾附加 `<!--KB_REFS:[{...}]-->` HTML 注释行,
- * LLM 会忽略,前端用正则提取后渲染引用来源面板。
- * 解析失败或无匹配返回 null(不更新 kbReferences)。
- */
-function parseKbRefsFromOutput(output: string | undefined): KbReference[] | null {
-  if (!output) return null
-  const match = output.match(/<!--KB_REFS:(.+?)-->/s)
-  if (!match) return null
-  try {
-    const arr = JSON.parse(match[1])
-    if (!Array.isArray(arr)) return null
-    const refs: KbReference[] = []
-    for (const item of arr) {
-      if (item && typeof item === 'object') {
-        refs.push({
-          source: String(item.source ?? ''),
-          section: String(item.section ?? ''),
-          text: String(item.text ?? ''),
-          score: Number(item.score ?? 0),
-          chunkId: String(item.chunk_id ?? ''),
-        })
-      }
-    }
-    return refs
-  } catch {
-    return null
-  }
-}
-
-/**
- * 从 web_search / web_fetch 的 output 里解析联网引用来源。
- * 后端附加 `<!--WEB_REFS:[{title,url,snippet,provider?}]-->`。
- */
 function parseWebRefsFromOutput(output: string | undefined): WebReference[] | null {
   if (!output) return null
   const match = output.match(/<!--WEB_REFS:(.+?)-->/s)
@@ -430,20 +395,8 @@ export const useChatStore = defineStore('chat', () => {
             if (payload.name === 'task') return
             // 子智能体内部工具返回 → 补全对应子 agent 卡片的 step
             if (payload.subagentId) {
-              // kb_search: 解析 output 末尾的 <!--KB_REFS:...--> 元数据,
               // 塞进 msg.kbReferences 供最终答案下方引用面板渲染
-              if (payload.name === 'kb_search') {
-                const refs = parseKbRefsFromOutput(payload.output)
-                if (refs && refs.length > 0) {
-                  if (!msg.kbReferences) msg.kbReferences = []
-                  // 去重(按 chunkId),避免多次 kb_search 调用重复堆叠
-                  for (const r of refs) {
-                    if (!msg.kbReferences.find((x) => x.chunkId === r.chunkId)) {
-                      msg.kbReferences.push(r)
-                    }
-                  }
-                }
-              }
+              
               if (payload.name === 'web_search' || payload.name === 'web_fetch') {
                 const refs = parseWebRefsFromOutput(payload.output)
                 if (refs && refs.length > 0) mergeWebRefs(msg, refs)
@@ -551,7 +504,8 @@ export const useChatStore = defineStore('chat', () => {
     const savedPending = msg.pendingInterruptGroups
     msg.status = 'streaming'
     msg.pendingInterruptGroups = undefined
-    const flatDecisions = groups.flatMap((g) => g.decisions)
+    msg.error = undefined
+    const flatDecisions = groups.flatMap((g) => g.decisions ?? [])
     if (flatDecisions.length > 0) {
       msg.hitlNote = `✅ 用户决定：${flatDecisions
         .map((d) => (d.type === 'approve' ? '批准' : '拒绝'))
@@ -621,17 +575,7 @@ export const useChatStore = defineStore('chat', () => {
           if (payload.name === 'write_todos') return
           if (payload.name === 'task') return
           if (payload.subagentId) {
-            if (payload.name === 'kb_search') {
-              const refs = parseKbRefsFromOutput(payload.output)
-              if (refs && refs.length > 0) {
-                if (!msg.kbReferences) msg.kbReferences = []
-                for (const r of refs) {
-                  if (!msg.kbReferences.find((x) => x.chunkId === r.chunkId)) {
-                    msg.kbReferences.push(r)
-                  }
-                }
-              }
-            }
+            
             if (payload.name === 'web_search' || payload.name === 'web_fetch') {
               const refs = parseWebRefsFromOutput(payload.output)
               if (refs && refs.length > 0) mergeWebRefs(msg, refs)

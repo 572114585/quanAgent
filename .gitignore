@@ -52,10 +52,13 @@ agent-frontend/yarn-error.log*
 agent-frontend/pnpm-debug.log*
 
 # ========== 工作目录临时文件 ==========
+/tmp/
 workspace/tmp/
 workspace/uploads/
 workspace/output/
 workspace/state/
+/workspace/Python/
+agent-frontend/.npm-cache/
 *.tmp
 nul
 

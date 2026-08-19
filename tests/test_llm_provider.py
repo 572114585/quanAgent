@@ -59,6 +59,19 @@ class SiliconflowProviderTests(unittest.TestCase):
             os.environ.pop("LLM_SUPPORTS_VISION", None)
             self.assertFalse(llm_supports_vision())
 
+    def test_known_text_only_model_ignores_stale_vision_override(self) -> None:
+        """Avoid sending image_url after switching away from a vision model."""
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_MODEL": "deepseek-v4-flash",
+                "LLM_SUPPORTS_VISION": "true",
+            },
+            clear=False,
+        ):
+            self.assertFalse(llm_supports_vision())
+
     def test_enable_thinking_extra_body(self) -> None:
         with patch.dict(
             os.environ,
@@ -129,6 +142,27 @@ class SiliconflowProviderTests(unittest.TestCase):
             )
             self.assertIn("ark.cn-beijing.volces.com", str(base))
             self.assertIn("/api/plan/v3", str(base))
+
+    def test_mimo_token_plan_defaults_and_alias(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "mimo",
+                "MIMO_API_KEY": "",
+                "MIMO_TOKEN": "tp-test-token",
+            },
+            clear=False,
+        ):
+            os.environ.pop("MIMO_API_KEY", None)
+            self.assertEqual(get_llm_provider(), "mimo")
+            self.assertEqual(get_llm_model_name(), "mimo-v2.5-pro")
+            client = create_llm()
+            model = getattr(client, "model_name", None) or getattr(client, "model", None)
+            self.assertEqual(model, "mimo-v2.5-pro")
+            base = getattr(client, "openai_api_base", None) or str(
+                getattr(client, "base_url", "")
+            )
+            self.assertIn("token-plan-cn.xiaomimimo.com/v1", str(base))
 
 
 if __name__ == "__main__":

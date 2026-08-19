@@ -33,10 +33,6 @@ _DEFAULT_WAIT_MS = 1500
 # 截图最大等待总时长，防止异常页面卡死 agent。
 _PAGE_TIMEOUT_MS = 30_000
 
-# workspace 根目录（与 agent_runtime.py 的 root_dir 一致）。
-_WORKSPACE_ROOT = Path("workspace").resolve()
-
-
 def _is_safe_dev_server_url(url: str) -> bool:
     """URL 模式只允许 http(s)://localhost 或 127.0.0.1 的 dev server，防 SSRF。
 
@@ -54,7 +50,10 @@ def _is_safe_dev_server_url(url: str) -> bool:
     return hostname in ("localhost", "127.0.0.1", "::1")
 
 
-def _resolve_html_path(html_path: str) -> Path | None:
+def _resolve_html_path(
+    html_path: str,
+    workspace_root: Path | None = None,
+) -> Path | None:
     """把 LLM 传入的各种路径形态规范化为 workspace 根下的绝对路径。
 
     兼容 agent_core.runtime 的 path normalization 约定：
@@ -65,6 +64,12 @@ def _resolve_html_path(html_path: str) -> Path | None:
 
     安全：解析后必须落在 workspace 根目录内，拒绝路径穿越（..）。
     """
+    if workspace_root is None:
+        # Keep direct callers working while avoiding a module-level import cycle.
+        from agent_core.config import WORKSPACE_ROOT as workspace_root
+
+    workspace_root = Path(workspace_root).resolve()
+
     if not html_path or not isinstance(html_path, str):
         return None
     text = html_path.strip().strip('"').strip("'")
@@ -81,7 +86,7 @@ def _resolve_html_path(html_path: str) -> Path | None:
         # workspace 是 agent 的工作根目录（与 agent_core.config.WORKSPACE_ROOT 一致）。
         # 但 LLM 可能传带 workspace/ 前缀的路径，也可能传不带；两种都试，哪个存在用哪个。
         # 不能简单无脑拼 workspace，否则 workspace/tmp/x → workspace/workspace/tmp/x 找不到。
-        candidates = [candidate, WORKSPACE_ROOT / candidate]
+        candidates = [candidate, workspace_root / candidate]
     else:
         candidates = [candidate]
 
@@ -91,7 +96,7 @@ def _resolve_html_path(html_path: str) -> Path | None:
         resolved = cand.resolve()
         # 路径穿越防御：解析后必须在 workspace 根目录之内
         try:
-            resolved.relative_to(WORKSPACE_ROOT)
+            resolved.relative_to(workspace_root)
         except ValueError:
             # 不在 workspace 内，拒绝（防 ../../etc/passwd 等）
             continue
@@ -219,7 +224,7 @@ def render_html(
 
                 else:
                     # --- 文件模式（原有逻辑）---
-                    html_abs = _resolve_html_path(html_path)
+                    html_abs = _resolve_html_path(html_path, WORKSPACE_ROOT)
                     if html_abs is None:
                         return f"渲染失败：找不到 HTML 文件 {html_path}。请确认路径正确（如 output/xxx.html），且文件已生成。"
 

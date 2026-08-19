@@ -17,12 +17,27 @@ load_dotenv()
 # siliconflow 默认支持 vision；其余 provider 默认否（可被 LLM_SUPPORTS_VISION 覆盖）
 _DEFAULT_VISION_PROVIDERS = frozenset({"siliconflow"})
 
+# A global ``LLM_SUPPORTS_VISION=true`` is convenient when switching between
+# vision-capable models, but it must not make a known text-only model receive
+# ``image_url`` parts.  Such requests are rejected by the OpenAI-compatible
+# APIs before the agent can return a useful response.  Keep this deliberately
+# narrow: model names for actual vision variants (for example ``*-vl``) are
+# not listed here and may still be enabled explicitly.
+_TEXT_ONLY_MODEL_NAMES = frozenset(
+    {
+        "deepseek-v4-flash",
+        "mimo-v2.5-pro",
+    }
+)
+
 
 def get_llm_provider() -> str:
     raw = os.getenv("LLM_PROVIDER", "agnes").strip().lower() or "agnes"
     # 别名：ark / doubao / 火山方舟 → volcengine
     if raw in {"ark", "doubao", "huoshan", "火山", "火山方舟"}:
         return "volcengine"
+    if raw in {"xiaomi", "xiaomimimo", "mimo"}:
+        return "mimo"
     return raw
 
 
@@ -68,6 +83,14 @@ def _provider_specs() -> dict[str, dict[str, str]]:
             "api_key_env": "VOLCENGINE_API_KEY",
             "api_key_aliases": "ARK_API_KEY,VOLCENGINE_TOKEN,ARK_TOKEN",
         },
+        "mimo": {
+            "model_env": "MIMO_MODEL",
+            "model_default": "mimo-v2.5-pro",
+            "base_url_env": "MIMO_BASE_URL",
+            "base_url_default": "https://token-plan-cn.xiaomimimo.com/v1",
+            "api_key_env": "MIMO_API_KEY",
+            "api_key_aliases": "MIMO_TOKEN",
+        },
     }
 
 
@@ -108,8 +131,13 @@ def _parse_bool(raw: str | None) -> bool | None:
 def llm_supports_vision() -> bool:
     """当前配置是否应按多模态 vision 处理图片。
 
-    优先读 LLM_SUPPORTS_VISION；未设置时 siliconflow 默认 True，其余 False。
+    已知文本模型始终返回 False；其余优先读 LLM_SUPPORTS_VISION，未设置时
+    siliconflow 默认 True、其余 False。
     """
+    model = get_llm_model_name().strip().lower()
+    if model in _TEXT_ONLY_MODEL_NAMES:
+        return False
+
     override = _parse_bool(os.getenv("LLM_SUPPORTS_VISION"))
     if override is not None:
         return override
@@ -135,10 +163,8 @@ def _common_chat_kwargs(*, provider: str) -> dict[str, Any]:
     retries_raw = os.getenv("LLM_MAX_RETRIES", "").strip()
     if retries_raw:
         kwargs["max_retries"] = max(0, int(retries_raw))
-    elif provider == "siliconflow":
-        kwargs["max_retries"] = 8
     else:
-        kwargs["max_retries"] = 4
+        kwargs["max_retries"] = 3
 
     extra_body: dict[str, Any] = {}
     enable_thinking = _parse_bool(os.getenv("LLM_ENABLE_THINKING"))
@@ -147,7 +173,7 @@ def _common_chat_kwargs(*, provider: str) -> dict[str, Any]:
         budget = os.getenv("LLM_THINKING_BUDGET", "").strip()
         if budget:
             extra_body["thinking_budget"] = int(budget)
-    elif enable_thinking is False:
+    elif enable_thinking is False or enable_thinking is None:
         # 显式关闭：对硅基/Qwen 等混合推理模型有意义（省 TPM）
         extra_body["enable_thinking"] = False
 
@@ -156,9 +182,9 @@ def _common_chat_kwargs(*, provider: str) -> dict[str, Any]:
     return kwargs
 
 
-def create_llm():
+def create_llm(provider: str | None = None):
     """根据 .env 中的 LLM_PROVIDER 创建对应的 LLM 实例。"""
-    provider = get_llm_provider()
+    provider = (provider or get_llm_provider()).strip().lower()
     specs = _provider_specs()
     if provider not in specs:
         provider = "agnes"
@@ -184,4 +210,18 @@ def create_llm():
     return ChatOpenAI(**kwargs)
 
 
-llm = create_llm()
+class _LazyLLM:
+    """Construct the configured model at first use instead of module import."""
+
+    _instance: ChatOpenAI | None = None
+
+    def _get(self) -> ChatOpenAI:
+        if self._instance is None:
+            self._instance = create_llm()
+        return self._instance
+
+    def __getattr__(self, name: str):
+        return getattr(self._get(), name)
+
+
+llm = _LazyLLM()

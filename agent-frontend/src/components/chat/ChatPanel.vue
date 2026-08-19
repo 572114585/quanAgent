@@ -45,7 +45,9 @@ const todos = computed(() => chat.todosBySession[props.session.id] ?? [])
 const subagents = computed(() => chat.subagentTasksBySession[props.session.id] ?? [])
 
 const pendingApprovalMsg = computed(() => {
-  return messages.value.find((m) => m.status === 'awaiting_approval' && m.pendingInterruptGroups && m.pendingInterruptGroups.length > 0)
+  return [...messages.value].reverse().find(
+    (m) => m.status === 'awaiting_approval' && m.pendingInterruptGroups && m.pendingInterruptGroups.length > 0
+  )
 })
 const pendingInterruptGroups = computed(() => pendingApprovalMsg.value?.pendingInterruptGroups ?? [])
 const hasPendingApproval = computed(() => pendingInterruptGroups.value.length > 0)
@@ -266,7 +268,6 @@ function onDecide(partial: ResumeGroup[]) {
               :error="m.error"
               :attachments="m.attachments"
               :artifacts="m.artifacts"
-              :kb-references="m.kbReferences"
               :web-references="m.webReferences"
               :can-regenerate="m.role === 'assistant' && (m.status === 'complete' || m.status === 'cancelled' || (m.artifacts && m.artifacts.length > 0))"
               @regenerate="chat.regenerate(props.session.id)"
@@ -281,6 +282,13 @@ function onDecide(partial: ResumeGroup[]) {
             v-if="hasPendingApproval"
             class="max-w-3xl mx-auto px-3 md:px-4 pb-2 pointer-events-auto animate-slide-up space-y-2"
           >
+            <div
+              v-if="pendingApprovalMsg?.error"
+              class="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400"
+              role="alert"
+            >
+              上次提交失败：{{ pendingApprovalMsg.error }}。请重试；若仍失败，请检查后端日志。
+            </div>
             <AskUserQuestion
               v-if="hasAskUser"
               :groups="askUserGroups"

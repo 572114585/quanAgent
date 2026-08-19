@@ -7,8 +7,7 @@ from .tavily import TavilyProvider
 from .brave import BraveProvider
 from .serper import SerperProvider
 from .duckduckgo import DuckDuckGoProvider
-from .registry import get_search_results, reset_providers
-from .fuse import fuse_search_results
+from .registry import close_providers, get_search_results, reset_providers
 from .url_utils import canonicalize_url, classify_source_type, extract_domain
 
 __all__ = [
@@ -22,7 +21,7 @@ __all__ = [
     "DuckDuckGoProvider",
     "get_search_results",
     "reset_providers",
-    "fuse_search_results",
+    "close_providers",
     "canonicalize_url",
     "classify_source_type",
     "extract_domain",

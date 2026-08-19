@@ -24,12 +24,27 @@ from agent_core.llm import (
     create_llm,
     get_llm_model_name,
     get_llm_provider,
-    llm,
     llm_supports_vision,
 )
 from agent_core.permissions import AgentMode, build_interrupt_on, resolve_permission
-from agent_core.prompts import SYSTEM_PROMPT, research_subagent, section_writer, system_prompt_for
-from agent_core.runtime import agent, build_agent, new_thread_id
+def __getattr__(name: str):
+    """Delay runtime/LLM construction until an entrypoint explicitly needs it.
+
+    This keeps schemas, permissions, and offline tests importable without an API key.
+    """
+    if name in {"agent", "build_agent", "new_thread_id"}:
+        from agent_core import runtime
+
+        return getattr(runtime, name)
+    if name == "llm":
+        from agent_core.llm import llm
+
+        return llm
+    if name in {"SYSTEM_PROMPT", "section_writer", "system_prompt_for"}:
+        from agent_core import prompts
+
+        return getattr(prompts, name)
+    raise AttributeError(name)
 
 __all__ = [
     "agent",
@@ -42,7 +57,6 @@ __all__ = [
     "llm_supports_vision",
     "SYSTEM_PROMPT",
     "system_prompt_for",
-    "research_subagent",
     "section_writer",
     "WORKSPACE_ROOT",
     "OUTPUT_DIR",

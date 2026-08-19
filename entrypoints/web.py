@@ -40,10 +40,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import mimetypes
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -70,26 +72,29 @@ from agent_core.config import (  # noqa: E402
     AGENT_RUN_DEADLINE_SECONDS,
     ALLOWED_ORIGINS,
     HITL_ENABLED_DEFAULT as HITL_ENABLED,
+    LANGFUSE_ENABLED,
     LOG_LEVEL,
     MAX_UPLOAD_SIZE,
     OUTPUT_DIR,
     UPLOADS_DIR,
     WEB_HOST_DEFAULT,
 )
-from agent_core.event_log import get_event_log  # noqa: E402
 from agent_core.events import SCHEMA_VERSION, make_event, make_event_id  # noqa: E402
 from agent_core.permissions import AgentMode  # noqa: E402
 from agent_core.run_registry import RunConflictError, get_run_registry  # noqa: E402
 from agent_core.runtime import get_checkpointer  # noqa: E402
 from artifacts import detect_new_artifacts, snapshot_output_dir  # noqa: E402
+from tools.search import close_providers  # noqa: E402
 
 try:
+    if not LANGFUSE_ENABLED:
+        raise ImportError("Langfuse tracing is disabled or unconfigured")
     from langfuse.langchain import CallbackHandler as _LangfuseCallbackHandler
-
-    _langfuse_available = True
-except Exception:  # langfuse 未配置时降级
+except Exception:  # langfuse 未安装、未配置或被显式禁用时降级
     _LangfuseCallbackHandler = None
     _langfuse_available = False
+else:
+    _langfuse_available = True
 
 
 # === 日志 ===
@@ -153,7 +158,13 @@ async def get_agent(mode: str | None = None) -> object:
 
 
 # === FastAPI 应用 ===
-app = FastAPI(title="Agent Web Bridge", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await close_providers()
+
+
+app = FastAPI(title="Agent Web Bridge", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -226,6 +237,10 @@ class ChatRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     sessionId: str
+    mode: str = Field(
+        default="",
+        description='agent | plan；空则用服务端 AGENT_MODE 默认值',
+    )
     # 每个 interrupt 一组决定，与 interrupt 事件的 groups 一一对应。
     # LangGraph 多 interrupt 恢复必须按 interrupt_id 索引：
     # https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation
@@ -239,13 +254,20 @@ class ResumeRequest(BaseModel):
             '"answers": [{"questionId": "...", "selected": [...], "text": "..."}]}]'
         ),
     )
-    mode: str = Field(
-        default="",
-        description="与发起 chat 时的 mode 保持一致；空则默认 agent",
-    )
+
+
+
+
+
+
+
+
+
+
 
 
 # === 附件处理 ===
+
 
 def _get_local_path(remote_url: str) -> str:
     """将 /uploads/xxx.pdf 转换为相对路径 uploads/xxx.pdf。"""
@@ -374,14 +396,12 @@ class CancelRequest(BaseModel):
 
 # === SSE 工具 ===
 class StreamEmitter:
-    """为单次 run 分配单调 eventId，写入 EventLog，并产出带 SSE id 的帧。"""
 
     def __init__(self, *, thread_id: str, run_id: str, message_id: str):
         self.thread_id = thread_id
         self.run_id = run_id
         self.message_id = message_id
         self.seq = 0
-        self._log = get_event_log()
 
     def emit(self, payload: dict) -> dict:
         self.seq += 1
@@ -395,16 +415,6 @@ class StreamEmitter:
             **fields,
         )
         event_id = str(body.get("eventId") or make_event_id(self.run_id, self.seq))
-        try:
-            self._log.append(
-                thread_id=self.thread_id,
-                run_id=self.run_id,
-                seq=self.seq,
-                event_type=event_type,
-                payload=body,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("event_log.append failed eventId=%s", event_id)
         return {
             "id": event_id,
             "event": "message",
@@ -570,7 +580,7 @@ async def _emit_subagent_tool_events(
     args_value = pending.get("args", "") if pending else ""
     _out = str(msg_chunk.content)
     _limit = 5000 if name in (
-        "kb_search", "kb_add_document", "web_search", "web_fetch",
+        "web_search", "web_fetch",
     ) else 500
     output = _out[:_limit]
 
@@ -802,9 +812,7 @@ async def _stream_agent(
                         yield _sse({"type": "thinking_delta", "delta": content}, emitter)
                     else:
                         yield _sse({"type": "delta", "delta": content}, emitter)
-                if not content and not reasoning_content:
                     # 没文本但有 chunk（如纯工具调用）→ 给前端一个思考指示
-                    yield _sse({"type": "thinking"}, emitter)
             elif isinstance(msg_chunk, ToolMessage):
                 # 工具执行完成：拆成两个事件 —— 思考区独立渲染
                 #   1) tool_call   : "模型决定调工具"（name + args）
@@ -873,11 +881,9 @@ async def _stream_agent(
                         "args": pending.get("args", ""),
                     }, emitter)
                     # 2) 再发 tool_result：补全同 callId 的 output / status=completed
-                    # kb_search / web_search / web_fetch 的 output 含引用元数据
-                    # (<!--KB_REFS:...--> 或 <!--WEB_REFS:...-->),前端要解析,不能截断到 500
                     _output_str = str(msg_chunk.content)
                     _out_limit = 5000 if name in (
-                        "kb_search", "kb_add_document", "web_search", "web_fetch",
+                        "web_search", "web_fetch",
                     ) else 500
                     yield _sse({
                         "type": "tool_result",
@@ -897,7 +903,7 @@ async def _stream_agent(
                     }, emitter)
                     _output_str = str(msg_chunk.content)
                     _out_limit = 5000 if name in (
-                        "kb_search", "kb_add_document", "web_search", "web_fetch",
+                        "web_search", "web_fetch",
                     ) else 500
                     yield _sse({
                         "type": "tool_result",
@@ -1097,6 +1103,19 @@ async def _run_event_stream(
     finally:
         await registry.end(session_id, active.run_id)
 
+
+def _client_disconnect_handler(session_id: str):
+    """Mark the session run cancelled when its SSE client disappears.
+
+    EventSourceResponse cancels content iteration on disconnect.  Explicitly
+    marking the registry entry prevents a cancelled iterator from leaving a
+    non-cancelled active run that rejects every later chat/resume with 409.
+    """
+    async def handle_disconnect(_message: dict) -> None:
+        await get_run_registry().cancel(session_id)
+
+    return handle_disconnect
+
 async def _aiter_from_sync(loop, sync_gen):
     """把同步生成器包成异步迭代器，在默认 executor 里跑。"""
     it = iter(sync_gen)
@@ -1121,6 +1140,28 @@ async def health():
             "upload_dir": str(UPLOADS_DIR.resolve()),
         }
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @app.post("/upload")
@@ -1193,7 +1234,11 @@ async def chat(req: ChatRequest, request: Request):
         ):
             yield evt
 
-    return EventSourceResponse(event_stream(), ping=15)
+    return EventSourceResponse(
+        event_stream(),
+        ping=15,
+        client_close_handler_callable=_client_disconnect_handler(req.sessionId),
+    )
 
 
 @app.post("/chat/resume")
@@ -1232,7 +1277,12 @@ async def resume(req: ResumeRequest, request: Request):
             content={"message": str(e)},
         )
 
-    logger.info("resume session=%s mode=%s decisions=%s", req.sessionId, mode, req.decisions)
+    logger.info(
+        "resume session=%s mode=%s decisions=%s",
+        req.sessionId,
+        mode,
+        req.decisions,
+    )
 
     async def event_stream() -> AsyncGenerator[dict, None]:
         async for evt in _run_event_stream(
@@ -1244,7 +1294,11 @@ async def resume(req: ResumeRequest, request: Request):
         ):
             yield evt
 
-    return EventSourceResponse(event_stream(), ping=15)
+    return EventSourceResponse(
+        event_stream(),
+        ping=15,
+        client_close_handler_callable=_client_disconnect_handler(req.sessionId),
+    )
 
 
 @app.post("/chat/cancel")
@@ -1259,17 +1313,6 @@ async def cancel_chat(req: CancelRequest):
     }
 
 
-@app.get("/chat/events")
-async def chat_events(sessionId: str, after: str | None = None, limit: int = 500):
-    """从 EventLog 重放事件，供 SSE 断线补流。"""
-    events = get_event_log().replay(sessionId, after_event_id=after, limit=limit)
-    active_run_id = get_run_registry().active_run_id(sessionId)
-    return {
-        "sessionId": sessionId,
-        "events": events,
-        "activeRunId": active_run_id,
-        "latestEventId": get_event_log().latest_event_id(sessionId),
-    }
 
 
 @app.get("/chat/state")
@@ -1305,7 +1348,9 @@ async def chat_state(sessionId: str):
     messages = values.get("messages", []) if isinstance(values, dict) else []
     return {
         "sessionId": sessionId,
-        "hasInterrupt": bool(state.next),
+        # A cancelled/failed graph can retain a next node without a real interrupt.
+        # Only actual interrupt groups should restore the approval UI.
+        "hasInterrupt": bool(interrupt_groups),
         "interrupts": interrupts,
         "interruptGroups": interrupt_groups,
         "todos": todos,
@@ -1445,7 +1490,7 @@ def _map_history_messages(raw_messages: list, session_id: str) -> list[dict]:
             name = msg.name or ""
             _out = str(msg.content)
             _limit = 5000 if name in (
-                "kb_search", "kb_add_document", "web_search", "web_fetch",
+                "web_search", "web_fetch",
             ) else 500
             output = _out[:_limit]
             record = None
@@ -1594,16 +1639,17 @@ async def chat_messages(sessionId: str):
 
         interrupt_groups = collect_interrupt_groups(state)
         # 将最后一条 assistant 标为 awaiting_approval，便于前端直接渲染
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                msg["status"] = "awaiting_approval"
-                msg["pendingInterruptGroups"] = interrupt_groups
-                break
+        if interrupt_groups:
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    msg["status"] = "awaiting_approval"
+                    msg["pendingInterruptGroups"] = interrupt_groups
+                    break
     return {
         "sessionId": sessionId,
         "messages": messages,
         "todos": todos,
-        "hasInterrupt": bool(state.next),
+        "hasInterrupt": bool(interrupt_groups),
         "interruptGroups": interrupt_groups,
         "checkpointId": _checkpoint_id_from_state(state),
         "activeRunId": get_run_registry().active_run_id(sessionId),

@@ -15,7 +15,6 @@ from .base import BaseSearchProvider, SearchQuery, SearchResult, QuotaExceededEr
 logger = logging.getLogger(__name__)
 
 _TAVILY_URL = "https://api.tavily.com/search"
-_TAVILY_TIMEOUT = 10.0
 
 
 class TavilyProvider(BaseSearchProvider):
@@ -29,19 +28,15 @@ class TavilyProvider(BaseSearchProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        depth = (query.search_depth or "basic").strip().lower()
-        if depth not in ("basic", "advanced"):
-            depth = "basic"
         body = {
             "query": query.query,
             "max_results": query.max_results,
-            "search_depth": depth,
             "topic": query.topic,  # "general" | "news"
             "include_answer": False,
             "include_raw_content": False,  # 省额度,正文由 web_fetch + save_to 落盘
         }
-        async with httpx.AsyncClient(timeout=_TAVILY_TIMEOUT) as client:
-            resp = await client.post(_TAVILY_URL, headers=headers, json=body)
+        resp = await self.request("POST", _TAVILY_URL, headers=headers, json=body,
+                                  timeout=6.0)
 
         # 错误码识别:429 Too Many Requests / 402 Payment Required
         if resp.status_code in (429, 402):

@@ -1,8 +1,8 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain, Wrench, ChevronRight, BookOpen, Globe } from 'lucide-vue-next'
+import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain, Wrench, ChevronRight, Globe } from 'lucide-vue-next'
 import { useMarkdown } from '@/composables/useMarkdown'
-import type { ToolCallRecord, ArtifactFile, KbReference, WebReference } from '@/types/domain'
+import type { ToolCallRecord, ArtifactFile, WebReference } from '@/types/domain'
 import FileAttachment from './FileAttachment.vue'
 
 const props = defineProps<{
@@ -18,8 +18,6 @@ const props = defineProps<{
   error?: string
   attachments?: Array<{ id: string; name: string; mime: string; size: number; previewUrl?: string; remoteUrl?: string }>
   artifacts?: ArtifactFile[]
-  /** 知识库引用来源（从 kb_search 结果解析），渲染在最终答案下方 */
-  kbReferences?: KbReference[]
   /** 联网引用来源（从 web_search / web_fetch 结果解析） */
   webReferences?: WebReference[]
   canRegenerate?: boolean
@@ -46,14 +44,8 @@ const hasToolCalls = computed(() => !!(props.toolCalls && props.toolCalls.length
 const hasHitlNote = computed(() => !!(props.hitlNote && props.hitlNote.trim()))
 const hasArtifacts = computed(() => !!(props.artifacts && props.artifacts.length > 0))
 const hasAttachments = computed(() => !!(props.attachments && props.attachments.length > 0))
-const hasKbRefs = computed(() => !!(props.kbReferences && props.kbReferences.length > 0))
 const hasWebRefs = computed(() => !!(props.webReferences && props.webReferences.length > 0))
 
-// 知识库引用面板:默认折叠,点击头部展开/收起
-const kbRefsExpanded = ref(false)
-function toggleKbRefs() {
-  kbRefsExpanded.value = !kbRefsExpanded.value
-}
 const webRefsExpanded = ref(false)
 function toggleWebRefs() {
   webRefsExpanded.value = !webRefsExpanded.value
@@ -64,11 +56,6 @@ function previewText(text: string, max = 200): string {
   return text.length > max ? text.slice(0, max) + '…' : text
 }
 // 来源文件名(只取 basename)
-function basename(path: string): string {
-  if (!path) return '未知来源'
-  const parts = path.replace(/\\/g, '/').split('/')
-  return parts[parts.length - 1] || path
-}
 function hostname(url: string): string {
   try {
     return new URL(url).hostname
@@ -410,48 +397,6 @@ async function copy() {
             />
           </div>
         </template>
-      </div>
-
-      <!-- 知识库引用来源面板(kb_search 命中片段) -->
-      <div
-        v-if="!isUser && hasKbRefs && !isError"
-        class="w-full mt-2"
-      >
-        <div class="rounded-md border border-border bg-surface-elevated/60 overflow-hidden">
-          <button
-            class="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-surface-muted transition-colors"
-            @click="toggleKbRefs"
-          >
-            <BookOpen class="size-3.5 shrink-0 text-ink-subtle" />
-            <span class="text-xs text-ink-subtle">知识库引用</span>
-            <span class="text-[10px] text-ink-subtle/70 font-mono">({{ kbReferences?.length }})</span>
-            <ChevronRight
-              class="size-3.5 text-ink-subtle ml-auto transition-transform duration-200"
-              :class="{ 'rotate-90': kbRefsExpanded }"
-            />
-          </button>
-          <div
-            v-show="kbRefsExpanded"
-            class="px-2 pb-2 pt-1 border-t border-border bg-surface-muted/30 space-y-1.5"
-          >
-            <div
-              v-for="(ref, idx) in kbReferences"
-              :key="ref.chunkId || idx"
-              class="rounded border border-border/60 bg-surface-elevated px-2 py-1.5"
-            >
-              <div class="flex items-center gap-1.5 mb-1">
-                <span class="text-[10px] font-mono text-ink-subtle/70">#{{ idx + 1 }}</span>
-                <FileText class="size-3 text-ink-subtle" />
-                <span class="text-[11px] font-mono text-ink truncate">{{ basename(ref.source) }}</span>
-                <span v-if="ref.section && ref.section !== '_preface'" class="text-[10px] text-ink-subtle">
-                  · {{ ref.section }}
-                </span>
-                <span class="text-[10px] text-ink-subtle/60 ml-auto font-mono">{{ ref.score.toFixed(4) }}</span>
-              </div>
-              <pre class="text-[11px] font-mono whitespace-pre-wrap break-all text-ink-subtle max-h-32 overflow-auto">{{ previewText(ref.text) }}</pre>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- 联网引用来源面板(web_search / web_fetch) -->

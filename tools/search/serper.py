@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 _SERPER_URL = "https://google.serper.dev/search"
 _SERPER_NEWS_URL = "https://google.serper.dev/news"
-_SERPER_TIMEOUT = 10.0
 
 
 class SerperProvider(BaseSearchProvider):
@@ -34,8 +33,7 @@ class SerperProvider(BaseSearchProvider):
         body = {"q": query.query, "num": query.max_results}
         url = _SERPER_NEWS_URL if query.topic == "news" else _SERPER_URL
 
-        async with httpx.AsyncClient(timeout=_SERPER_TIMEOUT) as client:
-            resp = await client.post(url, headers=headers, json=body)
+        resp = await self.request("POST", url, headers=headers, json=body, timeout=6.0)
 
         # 错误码识别
         if resp.status_code in (429, 402):

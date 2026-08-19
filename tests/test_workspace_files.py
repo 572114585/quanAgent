@@ -121,7 +121,8 @@ def test_langchain_tools_use_backend_without_shell(
     assert inspect_payload["tail"] == "b"
 
 
-def test_compiled_agent_registers_safe_file_tools():
+def test_compiled_agent_registers_safe_file_tools(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AGNES_API_KEY", "test-key")
     from agent_core.runtime import agent
 
     tools_by_name = agent.nodes["tools"].bound.tools_by_name
@@ -130,5 +131,7 @@ def test_compiled_agent_registers_safe_file_tools():
         "write_file",
         "inspect_file",
         "replace_file",
-        "check_research_material",
+        "web_search",
+        "web_fetch",
+        "check_final_report",
     }.issubset(tools_by_name)

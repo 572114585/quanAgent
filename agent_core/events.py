@@ -1,4 +1,4 @@
-"""流式事件契约（schemaVersion 2）。
+"""流式事件契约（schemaVersion 3）。
 
 Web SSE 与 CLI --format streaming-json 共用同一 payload 形状。
 传输层差异：Web 包成 SSE event:message（带 id: eventId）；CLI 打成 NDJSON 行。
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypedDict
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # v2 冻结集合（生产路径会发出）
 EventType = Literal[
@@ -49,6 +49,7 @@ V1_EVENT_TYPES: frozenset[str] = frozenset({
 
 # 别名：v2 事件类型集合与 v1 相同，仅公共字段扩展
 V2_EVENT_TYPES = V1_EVENT_TYPES
+V3_EVENT_TYPES = V1_EVENT_TYPES
 
 
 class StreamEvent(TypedDict, total=False):

@@ -9,7 +9,7 @@ def test_plan_mode_denies_write_and_execute():
     assert resolve_permission("replace_file", mode="plan") == "deny"
     assert resolve_permission("read_file", mode="plan") == "allow"
     assert resolve_permission("inspect_file", mode="plan") == "allow"
-    assert resolve_permission("check_research_material", mode="plan") == "allow"
+    assert resolve_permission("web_search", mode="plan") == "allow"
     assert resolve_permission("write_todos", mode="plan") == "allow"
     assert build_interrupt_on(mode="plan", hitl_enabled=True) is None
 
@@ -105,3 +105,12 @@ def test_unknown_tool_is_denied():
     assert resolve_permission("totally_unknown_tool", mode="agent", hitl_enabled=True) == "deny"
     assert resolve_permission("totally_unknown_tool", mode="agent", hitl_enabled=False) == "deny"
     assert resolve_permission("totally_unknown_tool", mode="plan") == "deny"
+
+
+def test_network_tools_are_allowed_in_agent_mode():
+    for name in (
+        "web_search",
+        "web_fetch",
+        "check_final_report",
+    ):
+        assert resolve_permission(name, mode="agent", entrypoint="web") == "allow"

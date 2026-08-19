@@ -18,6 +18,7 @@ This skill is a **CDN + embed-template lookup** for 8 commonly-used frontend vis
 
 ❌ **Not applicable**:
 - Visual design language (color / typography / spacing) → use `web-design-engineer`
+- **Editorial architecture / flowchart / sequence / state / ER / org chart / swimlane / timeline diagrams as standalone HTML/SVG** → use `diagram-design` (editorial SVG design system, not a JS chart library)
 - Pure static document → PDF conversion → use `md-to-pdf`
 - Backend data processing, no visual output
 - **User provided an object reference image and wants a procedural / animation-ready Three.js reconstruction** → use `object-sculptor` (not this skill)
@@ -28,6 +29,7 @@ This skill is a **CDN + embed-template lookup** for 8 commonly-used frontend vis
 
 | User asks for | Use | Why |
 |---|---|---|
+| Editorial architecture / flowchart / sequence / state machine / ER / org chart (standalone HTML/SVG, not a JS chart) | **`diagram-design` skill** | Opinionated SVG design system; stop using this skill |
 | Bar / line / pie / scatter / heatmap / K-line / sankey / funnel / gauge chart | **echarts** | One-line CDN, `renderer:'svg'` makes PNG and PDF both crisp |
 | Complex custom visualization (node graph / tree / chord) | **echarts** or **D3** | echarts has more built-in types, D3 is more freeform |
 | Object reference image → procedural / code-only Three.js model | **`object-sculptor` skill** | Spec + geometry factory + visual gates; stop using this skill |

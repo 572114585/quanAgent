@@ -24,12 +24,9 @@ sse-starlette>=2.0
 python-multipart>=0.0.9
 pydantic>=2.5
 langgraph-checkpoint-sqlite>=2.0
+pytest>=8.0
+pytest-asyncio>=0.23
 
-# 知识库工具(kb_tool)
-chromadb>=0.4
-rank_bm25>=0.2
-jieba>=0.42
-sentence-transformers>=2.2
 # MinerU 文档解析走云 API(复用 skills/mineru/scripts/extract.py),无需本地 torch/GPU
 # 前置依赖:Node.js + `npm install -g mineru-open-api`
 # token 配置:在 .env 设置 MINERU_API_TOKEN(可选,无 token 自动降级 flash-extract)

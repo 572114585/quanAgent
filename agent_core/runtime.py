@@ -29,18 +29,17 @@ from agent_core.config import CHECKPOINT_DB_PATH, HOOKS_DIR, ensure_runtime_dirs
 from agent_core.llm import create_llm
 from agent_core.middleware import CompactReseedMiddleware, TodoGateMiddleware
 from agent_core.permissions import AgentMode, Entrypoint, build_interrupt_on, default_mode
-from agent_core.prompts import research_subagent, section_writer, system_prompt_for
+from agent_core.prompts import section_writer, system_prompt_for
 from hooks import build_hooks_middleware
 from sandbox import backend
-from tools import (
-    ask_user_question,
-    check_research_material,
-    get_current_time,
-    inspect_file,
-    render_html,
-    replace_file,
-    view_image,
-)
+from tools.ask_user_question import ask_user_question
+from tools.get_current_time import get_current_time
+from tools.render_html import render_html
+from tools.report_quality import check_final_report
+from tools.view_image import view_image
+from tools.web_fetch import web_fetch
+from tools.web_search import web_search
+from tools.workspace_files import inspect_file, replace_file
 
 
 class DualSqliteSaver(SqliteSaver):
@@ -100,9 +99,12 @@ class DualSqliteSaver(SqliteSaver):
         return await asyncio.to_thread(self.get_tuple, config)
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
-        return await asyncio.to_thread(
+        """Async-generator wrapper required by LangGraph's ``aget_state_history``."""
+        rows = await asyncio.to_thread(
             lambda: list(self.list(config, filter=filter, before=before, limit=limit))
         )
+        for row in rows:
+            yield row
 
     async def alist_threads(self) -> list[str]:
         return await asyncio.to_thread(self.list_threads)
@@ -180,7 +182,6 @@ def build_agent(
         user_middleware.extend(middleware)
 
     subagents = [
-        _subagent_with_hooks(research_subagent, hooks_mw, interrupt_on=interrupt_on),
         _subagent_with_hooks(section_writer, hooks_mw, interrupt_on=interrupt_on),
         # 显式 general-purpose，覆盖框架默认（默认无 Hooks → trust 断链）
         _subagent_with_hooks(
@@ -193,7 +194,6 @@ def build_agent(
                     ask_user_question,
                     inspect_file,
                     replace_file,
-                    check_research_material,
                 ],
             },
             hooks_mw,
@@ -212,7 +212,9 @@ def build_agent(
             ask_user_question,
             inspect_file,
             replace_file,
-            check_research_material,
+            check_final_report,
+            web_search,
+            web_fetch,
         ],
         subagents=subagents,
         interrupt_on=interrupt_on,
@@ -223,7 +225,21 @@ def build_agent(
 
 
 # 模块级单例：供 channels 直接 import（写/execute deny，无 HITL）
-agent = build_agent(hitl=False, entrypoint="channel", mode="agent")
+class _LazyAgent:
+    """Build the channel singleton on first use, not during module import."""
+
+    _instance: Any | None = None
+
+    def _get(self) -> Any:
+        if self._instance is None:
+            self._instance = build_agent(hitl=False, entrypoint="channel", mode="agent")
+        return self._instance
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get(), name)
+
+
+agent = _LazyAgent()
 
 
 def new_thread_id(prefix: str = "thread") -> str:

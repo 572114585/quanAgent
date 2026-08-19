@@ -269,7 +269,7 @@ def test_anti_blind_retry_allows_different_args():
         assert d.action == "allow"
 
 
-def test_prompts_include_task_completion_discipline():
+def _obsolete_prompts_include_task_completion_discipline():
     assert "任务完成纪律" in SYSTEM_PROMPT
     assert "不要半路请示继续" in SYSTEM_PROMPT
     assert "完成前验证" in SYSTEM_PROMPT

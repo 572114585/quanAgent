@@ -313,58 +313,6 @@ def builtin_anti_blind_retry(
     return HookRegistration(name="anti_blind_retry", before_tool=before, after_tool=after)
 
 
-def builtin_research_validate_after_task() -> HookRegistration:
-    """task() 返回后校验 research 落盘素材；失败则改写 ToolMessage 强制补检。"""
-
-    def after(ctx: HookContext) -> None:
-        if ctx.tool_name != "task":
-            return
-        result = ctx.result
-        if result is None or not hasattr(result, "content"):
-            return
-        content = str(getattr(result, "content", "") or "")
-        # 从结果或 args 中找 research 路径
-        candidates: list[str] = []
-        import re
-
-        for m in re.finditer(r"(?:workspace/)?tmp/research/[^\s\"']+\.md", content):
-            candidates.append(m.group(0))
-        desc = ""
-        if isinstance(ctx.tool_args, dict):
-            desc = str(ctx.tool_args.get("description") or "")
-            for m in re.finditer(r"(?:workspace/)?tmp/research/[^\s\"']+\.md", desc):
-                candidates.append(m.group(0))
-        if not candidates:
-            return
-        depth = "in-depth" if "in-depth" in desc.lower() or "深入" in desc else "standard"
-        from agent_core.config import WORKSPACE_ROOT
-        from tools.research_validate import validate_research_material
-
-        errors: list[str] = []
-        for rel in dict.fromkeys(candidates):  # 保序去重
-            path = Path(rel)
-            if not path.is_absolute():
-                # /tmp/research → workspace/tmp/research
-                cleaned = rel.lstrip("/")
-                if cleaned.startswith("tmp/"):
-                    path = WORKSPACE_ROOT / cleaned
-                elif cleaned.startswith("workspace/"):
-                    path = Path(cleaned)
-                else:
-                    path = WORKSPACE_ROOT / cleaned
-            report = validate_research_material(path, depth=depth)
-            if not report.ok:
-                errors.append(report.summary())
-        if errors:
-            suffix = "\n\n" + "\n".join(errors) + "\n请用 web_fetch(..., save_to=...) 补齐后再返回。"
-            try:
-                result.content = content + suffix
-                if hasattr(result, "status"):
-                    result.status = "error"
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to annotate research validation on task result")
-
-    return HookRegistration(name="research_validate", after_tool=after)
 
 
 def load_script_hooks(hooks_dir: Path) -> list[HookRegistration]:
@@ -492,7 +440,6 @@ def build_hooks_middleware(
     regs: list[HookRegistration] = [
         builtin_audit_log(),
         builtin_anti_blind_retry(),
-        builtin_research_validate_after_task(),
     ]
     if hooks_dir is not None:
         regs.extend(load_script_hooks(hooks_dir))

@@ -15,7 +15,6 @@ from .base import BaseSearchProvider, SearchQuery, SearchResult, QuotaExceededEr
 logger = logging.getLogger(__name__)
 
 _BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
-_BRAVE_TIMEOUT = 10.0
 
 
 class BraveProvider(BaseSearchProvider):
@@ -35,8 +34,8 @@ class BraveProvider(BaseSearchProvider):
         }
         # Brave 用单独的 news 端点;为保持简单,这里仍用 web 端点
         # (news 端点需要额外订阅,免费层不一定支持)
-        async with httpx.AsyncClient(timeout=_BRAVE_TIMEOUT) as client:
-            resp = await client.get(_BRAVE_URL, headers=headers, params=params)
+        resp = await self.request("GET", _BRAVE_URL, headers=headers, params=params,
+                                  timeout=6.0)
 
         # 错误码识别
         if resp.status_code in (429, 402):
