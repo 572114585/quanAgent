@@ -45,6 +45,7 @@ import json
 import logging
 import mimetypes
 import os
+import sys
 import re
 import time
 import uuid
@@ -83,7 +84,12 @@ from agent_core.events import SCHEMA_VERSION, make_event, make_event_id  # noqa:
 from agent_core.permissions import AgentMode  # noqa: E402
 from agent_core.run_registry import RunConflictError, get_run_registry  # noqa: E402
 from agent_core.runtime import get_checkpointer  # noqa: E402
-from artifacts import detect_new_artifacts, snapshot_output_dir  # noqa: E402
+from artifacts import (  # noqa: E402
+    attach_moss_urls,
+    detect_new_artifacts,
+    finalize_diagram_pairs,
+    snapshot_output_dir,
+)
 from tools.search import close_providers  # noqa: E402
 
 try:
@@ -1021,7 +1027,8 @@ async def _stream_with_artifacts(
             pass
         yield evt
     if done_evt is not None:
-        new_artifacts = detect_new_artifacts(snapshot_before)
+        finalize_diagram_pairs(snapshot_before)
+        new_artifacts = attach_moss_urls(detect_new_artifacts(snapshot_before))
         for art in new_artifacts:
             payload = {"type": "artifact", **art}
             if run_id:
@@ -1671,6 +1678,21 @@ def main() -> None:
         logger.warning(
             "AGENT_API_TOKEN 未设置：API 无鉴权。仅建议在本机回环地址使用。"
         )
+    from tools.moss_upload import moss_settings
+
+    moss = moss_settings()
+    if moss.configured:
+        try:
+            import boto3  # noqa: F401
+        except ModuleNotFoundError:
+            logger.warning(
+                "MOSS 已配置但当前 Python 未安装 boto3（sys.executable=%s）。产物将只返回本地 /output 链。请用项目 .venv 启动，或对该解释器 pip install boto3。",
+                sys.executable,
+            )
+        else:
+            logger.info("MOSS upload enabled bucket=%s prefix=%s/", moss.bucket, moss.key_prefix)
+    else:
+        logger.info("MOSS upload disabled (missing MOSS_ACCESS_KEY/SECRET_KEY/BUCKET)")
     logger.info(
         "Agent Web Bridge listening on http://%s:%s (hitl=%s cors=%s)",
         host,

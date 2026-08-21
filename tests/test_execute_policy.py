@@ -27,6 +27,7 @@ from agent_core.permissions import (
         ("npm run build", "auto", "build"),
         ("pytest -q", "auto", "build"),
         ("python skills/word-docx/scripts/create.py", "auto", "skill"),
+        ("python skills/upload-to-moss/scripts/upload.py --file output/report.pdf", "auto", "skill"),
         ("python.exe skills\\demo\\scripts\\run.py", "auto", "skill"),
         ("python -c print(1)", "ask", "interpreter"),
         ('python -c "print(1)"', "ask", "interpreter"),

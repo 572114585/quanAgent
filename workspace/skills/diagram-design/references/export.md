@@ -1,6 +1,6 @@
 # Export to PNG / SVG
 
-Convert a generated diagram HTML file into a portable `.svg` and/or `.png` under `output/`. **Manual only — never run unprompted.**
+Convert a generated diagram HTML file into a portable `.svg` and/or `.png` under `output/`. SVG is required for the normal `diagram-design` HTML+SVG deliverable; PNG remains opt-in.
 
 ## Trigger
 
@@ -84,5 +84,6 @@ If the target aspect ratio doesn't match the `viewBox`, say so and offer to redr
 
 - Modifies the source HTML.
 - Adds export buttons or extra `<script>` tags.
-- Auto-emits `.svg` or `.png` alongside HTML generation. Manual on every call.
+- The normal diagram workflow always emits `.svg` alongside the HTML source by running the packaged SVG exporter after `self_check.py`.
+- PNG is never emitted unless the user explicitly requests a raster export.
 - Runs `python -c`, writes a temp `.py` under `tmp/` to drive Playwright, or starts a local HTTP server.

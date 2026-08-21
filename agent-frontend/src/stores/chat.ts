@@ -13,6 +13,12 @@ function uid(prefix = 'm') {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36)}`
 }
 
+function finishExecution(message: ChatMessage) {
+  if (message.executionStartedAt !== undefined && message.executionDurationMs === undefined) {
+    message.executionDurationMs = Math.max(0, Date.now() - message.executionStartedAt)
+  }
+}
+
 /**
  * 从 write_todos 工具调用的 args 中解析 todo 列表。
  * args 可能为 string(JSON) 或 object，todos 字段是完整的任务列表（每次调用整体替换）。
@@ -214,6 +220,7 @@ export const useChatStore = defineStore('chat', () => {
       for (const m of arr) {
         if (m.status === 'streaming' || m.status === 'pending') {
           m.status = 'cancelled'
+          finishExecution(m)
         }
       }
     }
@@ -300,7 +307,8 @@ export const useChatStore = defineStore('chat', () => {
       content: '',
       hasThought: true,
       status: 'streaming',
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      executionStartedAt: Date.now()
     }
     append(sessionId, userMsg)
     append(sessionId, assistantMsg)
@@ -454,19 +462,27 @@ export const useChatStore = defineStore('chat', () => {
             }
           },
           onDone: () => {
-            if (msg.status === 'streaming') msg.status = 'complete'
+            if (msg.status === 'streaming') {
+              msg.status = 'complete'
+              finishExecution(msg)
+            }
           }
         }
       )
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        if (msg.status === 'streaming') msg.status = 'cancelled'
+        if (msg.status === 'streaming') {
+          msg.status = 'cancelled'
+          finishExecution(msg)
+        }
       } else if (err?.name === 'ChatStreamError') {
         msg.status = 'error'
         msg.error = err.message
+        finishExecution(msg)
       } else {
         msg.status = 'error'
         msg.error = String(err?.message ?? err)
+        finishExecution(msg)
       }
     } finally {
       aborters.value[sessionId] = null
@@ -499,6 +515,9 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (!lastApprovalMsg) return
     const msg = lastApprovalMsg
+
+    // 兼容旧消息：恢复审批时才开始记录执行时间。
+    if (msg.executionStartedAt === undefined) msg.executionStartedAt = Date.now()
 
     // 失败时恢复审批 UI，避免「已点批准但没执行」的错觉
     const savedPending = msg.pendingInterruptGroups
@@ -633,17 +652,24 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
         onDone: () => {
-          if (msg.status === 'streaming') msg.status = 'complete'
+          if (msg.status === 'streaming') {
+            msg.status = 'complete'
+            finishExecution(msg)
+          }
         }
       },
         { mode: agentMode.value }
       )
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        if (msg.status === 'streaming') msg.status = 'cancelled'
+        if (msg.status === 'streaming') {
+          msg.status = 'cancelled'
+          finishExecution(msg)
+        }
       } else {
         msg.status = 'error'
         msg.error = String(err?.message ?? err)
+        finishExecution(msg)
         // resume 失败：恢复待审批 UI，或从 /chat/state 拉取
         try {
           const state = await fetchState(sessionId)
@@ -662,6 +688,11 @@ export const useChatStore = defineStore('chat', () => {
             msg.status = 'awaiting_approval'
             msg.hitlNote = undefined
           }
+        }
+        if (msg.status === 'awaiting_approval') {
+          msg.executionDurationMs = undefined
+          // 审批恢复失败但仍可继续时，不把本次失败尝试计入最终耗时。
+          msg.executionDurationMs = undefined
         }
       }
     } finally {
@@ -726,7 +757,8 @@ export const useChatStore = defineStore('chat', () => {
         subagentType: p.subagentType,
         description: p.description,
         status: 'running',
-        steps: []
+        steps: [],
+        startedAt: Date.now()
       })
     }
   }
@@ -736,7 +768,12 @@ export const useChatStore = defineStore('chat', () => {
     const arr = subagentTasksBySession.value[sessionId]
     if (!arr) return
     const task = arr.find((s) => s.id === subagentId)
-    if (task) task.status = 'completed'
+    if (task) {
+      task.status = 'completed'
+      if (task.startedAt !== undefined && task.durationMs === undefined) {
+        task.durationMs = Math.max(0, Date.now() - task.startedAt)
+      }
+    }
   }
 
   /** 子智能体内部工具调用开始：追加一条 running 步骤 */

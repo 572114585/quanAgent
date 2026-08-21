@@ -97,6 +97,29 @@ _SAFE_SUBPROCESS_ENV_KEYS: tuple[str, ...] = (
     # CLI 文档变量名为 MINERU_TOKEN,一并放行以兼容。
     "MINERU_API_TOKEN",
     "MINERU_TOKEN",
+    # PPT Master only receives the dedicated domestic image and visual-review
+    # credentials.  Do not pass the primary LLM provider's general secrets.
+    "PPT_VISION_MODEL",
+    "PPT_VISION_TIMEOUT",
+    "PPT_VISION_MAX_TOKENS",
+    "PPT_IMAGE_MODEL",
+    "SILICONFLOW_API_KEY",
+    "SILICONFLOW_BASE_URL",
+    "AGENT_API_KEY",
+    "ARK_AGENT_PLAN_BASE_URL",
+    "VOLCENGINE_OUTPUT_FORMAT",
+    "IMAGE_BACKEND",
+    "PPT_ALLOWED_IMAGE_BACKENDS",
+    "IMAGE_CONCURRENCY",
+    # upload-to-moss skill 子进程需要读到桶配置；WORKSPACE_ROOT 避免 cwd=workspace 时相对路径错一层。
+    "WORKSPACE_ROOT",
+    "MOSS_ENDPOINT",
+    "MOSS_REGION",
+    "MOSS_BUCKET",
+    "MOSS_UPLOAD_BUCKET",
+    "MOSS_ACCESS_KEY",
+    "MOSS_SECRET_KEY",
+    "MOSS_KEY_PREFIX",
 )
 # Node 构建链命令：web-video-presentation 等 Node skill 需要。
 # 不并入 DEFAULT_ALLOWED_COMMANDS（保持默认收紧），由调用方按需合并传入。
@@ -130,4 +153,4 @@ _WRITE_ALLOWED_SUBDIRS: tuple[str, ...] = ("output", "tmp")
 # skills 子树名（写保护边界）。
 _SKILLS_SUBDIR = "skills"
 # skills 脚本的 glob 模式（相对 root_dir），用于构建 execute 脚本白名单。
-_SKILL_SCRIPTS_GLOB = "skills/*/scripts/*.py"
+_SKILL_SCRIPTS_GLOB = "skills/*/scripts/**/*.py"

@@ -1,96 +1,78 @@
-# feature/v1 精简与提速计划
+# PPT Master Skill 集成方案
 
-## Summary
+## 总结
 
-本分支收敛为“通用 Agent + 快速联网搜索 + 文档/文件能力”：
+- 将 `D:\codes\ppt-master\skills\ppt-master` 以完整快照方式集成到 `workspace/skills/ppt-master`，保留全部工作流、脚本、模板、许可证和赞助信息。
+- 固定上游版本 `4.8.0`、提交 `cdabb4e5e0703651f88738df8b5f43eaee7fd50c`，增加来源与本项目适配记录，后续采用受控升级，不运行上游自更新脚本。
+- 保持主模型为 DeepSeek；PPT 图片理解独立使用硅基流动 Qwen3-VL，图片生成只使用火山引擎 Seedream，不回退到国外模型。
+- 第一阶段只支持 Web 端，保留独立的 localhost 确认/预览页面、单次长 SSE 流和可恢复项目状态。
+- 组织方式遵循 Codex Skill 的 `SKILL.md + scripts/references/assets` 渐进加载结构。[OpenAI Build Skills](https://learn.chatgpt.com/docs/build-skills)
 
-- 完整移除知识库和 Research V2。
-- 保持单一 `requirement.txt`，只删除废弃依赖，不拆文件。
-- 所有联网查询统一走 Fast Search。
-- 普通搜索只返回 3 条摘要；仅在用户提供 URL 或明确要求打开网页时抓取单页正文。
-- 移除未使用的 SSE 事件持久化。
-- 保留完整对话历史，但压缩 checkpoint 中间状态。
-- 保留 `workspace/aiindex`、`workspace/uploads` 和旧 Research 数据；只删除生成的 `workspace/kb_store`。
+## 实施改动
 
-## Implementation Changes
+### Skill 与工作目录
 
-### 1. 移除知识库与 Research V2
+- 完整复制 PPT Master，并保留上游 `SKILL.md` 元数据、attribution guard 标记、`LICENSE`、`SPONSORS.md` 和 `SPONSORS_CN.md`。
+- 在 Skill 中加入强制读取的 `references/quanagent-host.md`，规定：
+  - 中间项目统一创建在 `workspace/tmp/ppt-master-projects`。
+  - 最终 PPTX 必须显式输出到 `workspace/output/<安全文件名>.pptx`。
+  - 图片检查调用新的国内视觉工具，不调用依赖主 LLM 的现有 `view_image`。
+  - 图片生成后端只能为 Volcengine。
+  -默认工作流使用独立确认页并在 Web 对话中返回可点击地址。
+- 增加供应商元数据，记录上游版本、提交、来源和本地补丁；禁止直接运行 `update_repo.py` 覆盖适配层。
+- 模板注册允许通过 PPT Master 官方注册脚本写入 `workspace/skills/ppt-master/templates/**` 及其索引；通用写文件工具仍禁止修改整个 `skills/`。升级前备份并合并用户模板和索引。
 
-- 删除知识库工具、管理 CLI、Chroma 初始化、KB 配置、权限规则、提示词、前端 `KB_REFS` 解析和知识库引用面板。
-- 删除 Research V2 核心模型、工具、citation verifier、Research REST API、前端 Research 工作台、research-agent 子智能体及专属测试/评测。
-- 删除 `research-strategies` skill；改写 `document-builder`、`outline-planner`、`section-writer` 和 `auto-review`，取消 run_id、Evidence ID、Coverage Matrix 和 report-ready 依赖。
-- 文档任务改为最多执行 3 次快速搜索，将标题、URL、摘要写入 `/tmp/source_brief.md`；章节撰写直接使用 Markdown 链接引用。资料不足时明确标注缺口，不生成未经摘要支持的确定性事实。
-- 保留通用 `check_final_report`，继续检查占位符、TODO、引用链接、关键点和过时预测。
-- 从单一 `requirement.txt` 删除 `chromadb`、`rank_bm25`、`jieba`、`sentence-transformers`；其余依赖结构不变。
-- 删除 `workspace/kb_store`；不删除 `workspace/aiindex`、`workspace/uploads`。`workspace/state/research` 保留为只读旧数据，运行时不再扫描或创建。
+### 视觉能力
 
-### 2. 建立唯一的快速联网链路
+- 新增只读工具：
+  `review_ppt_images(paths: list[str], task: str, detail: "low" | "high" = "high") -> str`
+- 工具允许一次检查 1–8 张位于 `uploads/`、`tmp/`、`output/` 的图片，复用现有路径安全校验，并注册到主 Agent 和通用审阅子 Agent。
+- 使用硅基流动 OpenAI-compatible 接口，默认模型固定为已验证在当前账号可用的 `Qwen/Qwen3-VL-30B-A3B-Instruct`，关闭 thinking；不改变全局 DeepSeek 配置。[硅基流动多模态视觉文档](https://docs.siliconflow.cn/cn/userguide/capabilities/multimodal-vision)
+- PPT Master 图片生成配置为 `volcengine`，默认使用其现有 Seedream 4.5 实现。增加后端白名单校验，显式拒绝 OpenAI、Gemini 等后端；火山接口失败时返回明确错误，不静默切换。[火山引擎 Seedream 文档](https://www.volcengine.com/docs/6492/2221472?lang=zh)
 
-- 主 Agent 直接注册 `web_search` 和 `web_fetch`，联网不再委托子智能体。
-- `web_search` 接口收敛为：
-  - `query`
-  - `max_results=3`，服务端强制限制为 1–5
-  - `topic="general"|"news"`
-- 删除 `mode`、`save_to`、`phase`、`search_depth` 及 fusion 排序；Provider 固定按 Tavily → Brave → Serper → DuckDuckGo 顺序 failover，首个非空结果立即返回。
-- 每个 Provider 超时 6 秒；额度错误继续进入冷却；DDG 同样受 6 秒调用上限约束。成功后不再等待其他 Provider，也不自动抓取结果正文。
-- Provider 复用 HTTP 连接池，并在应用 lifespan 结束时关闭。
-- `web_fetch` 收敛为 `url`、`max_content_chars=6000`：
-  - 仅当用户提供 URL 或明确要求打开/读取页面时允许调用。
-  - Direct 请求一次，超时 8 秒；失败后仅尝试一次 Jina，超时 8 秒。
-  - 不自动启用 Playwright。
-  - 远程 PDF 不进入 MinerU 长链路，提示用户上传文件；上传文档仍可使用现有 MinerU skill。
-- 保留 `WEB_REFS` 输出协议和前端联网引用展示。
-- 系统提示词规定普通联网问题只执行一次搜索；同义改写和补搜仅在第一次无结果时执行一次。
-- 将活动配置调整为 `LLM_MAX_RETRIES=3`、`AGENT_RECURSION_LIMIT=40`、`AGENT_RUN_DEADLINE_SECONDS=300`；thinking 保持关闭。
+### 执行、依赖与 Web 行为
 
-### 3. 精简启动和工具装配
+- 将可信脚本发现从一层目录改为递归发现 `skills/*/scripts/**/*.py|sh`，使确认页和 SVG 编辑器等嵌套脚本可执行；仍拒绝 `tmp/` 或其他位置的任意脚本。
+- 继续使用缩减后的子进程环境变量白名单，仅新增 PPT 所需变量，避免将其他密钥传给脚本。
+- 根依赖加入 `-r workspace/skills/ppt-master/requirements.txt`。基本 PPT 生成不依赖 LibreOffice/Inkscape；ffmpeg、Pandoc、PowerPoint 视频导出作为可选能力，缺失时给出功能级提示，不阻塞 PPTX。
+- 单次 Web 运行上限设为 3600 秒、递归上限 120；耗时的 `execute` 调用显式传入 3600 秒超时。
+- 使用现有 SQLite checkpoint 和 `tmp/ppt-master-projects` 保存恢复状态，不新增后台任务队列。连接中断后可通过现有恢复执行入口继续。
+- 最终 PPTX 进入 `workspace/output` 后沿用现有 artifact 检测和下载能力，不修改前端文件下载协议。
+- 不为微信/企业微信开放命令执行能力。
 
-- 将 `tools/__init__.py` 改为无 eager re-export 的轻量包入口，所有调用方从具体模块导入。
-- Agent 启动只装配当前使用的通用工具、快速搜索工具、section-writer 和 general-purpose 子智能体。
-- 删除 Research/KB 相关循环导入兼容代码、特殊工具输出分支和恢复审批桥接。
-- 保留所有非 Research 类技能和 PDF、Word、Excel、图表、文件处理能力。
-- 增加启动 smoke benchmark，确认导入阶段不会出现 `chromadb`、`sentence_transformers`、Research V2 或 Hugging Face 网络访问。
+## 配置与公开接口
 
-### 4. 移除事件日志并压缩 checkpoint
+新增或记录以下配置：
 
-- 删除 `EventLog`、`events.sqlite` 配置、`GET /chat/events` 和前端未使用的 `fetchEvents`。
-- SSE 事件继续在内存中携带 runId/eventId，但不再逐 token 写数据库。
-- 不再生成空 `thinking` 事件；只有真实 reasoning 文本才发送 `thinking_delta`。
-- 保留 `/chat/messages`、`/chat/sessions` 和最新 checkpoint，刷新后历史恢复方式不变。
-- 新增离线状态维护命令：
-  - 操作前使用 SQLite backup API 备份 checkpoint 和旧 event DB。
-  - 有 pending interrupt 的 thread 完全不裁剪。
-  - 已完成 thread 保留最近 3 个根 checkpoint，删除已完成子图 checkpoint 和未被保留 checkpoint 对应的 writes。
-  - 校验每个 thread 最新 checkpoint blob 未变化后执行 WAL checkpoint 和 `VACUUM`。
-  - 旧 `workspace/state/research` 明确排除在维护范围外。
-- 后续每个成功且无 interrupt 的 run 结束后，后台执行同样的单 thread 裁剪；`VACUUM` 只由离线维护命令执行。
-- 删除现有 `events.sqlite`、WAL、SHM 前先纳入一次性备份。
+```dotenv
+PPT_VISION_MODEL=Qwen/Qwen3-VL-30B-A3B-Instruct
+PPT_VISION_TIMEOUT=120
+PPT_VISION_MAX_TOKENS=2000
 
-## Public Interface Changes
+IMAGE_BACKEND=volcengine
+PPT_ALLOWED_IMAGE_BACKENDS=volcengine
+IMAGE_CONCURRENCY=2
+LAS_API_KEY=
 
-- 移除全部 `/research/*` API。
-- 移除 `GET /chat/events`。
-- 移除 `kb_search`、`kb_add_document`、Research V2 工具和 `KB_REFS` 前端类型。
-- 简化 `web_search` 和 `web_fetch` 参数；保留 `WEB_REFS`。
-- `/chat`、`/chat/resume`、`/chat/messages`、`/chat/sessions`、上传和产物接口保持兼容。
-- `/chat/resume` 仍用于文件写入、Shell 等 HITL 审批，但删除 Research 计划批准逻辑。
-- 前端不增加搜索模式开关，所有聊天统一使用快速搜索。
+AGENT_RUN_DEADLINE_SECONDS=3600
+AGENT_RECURSION_LIMIT=120
+```
 
-## Test Plan
+- 视觉理解复用现有 `SILICONFLOW_API_KEY` 和 `SILICONFLOW_BASE_URL`。
+- Seedream 使用新配置的 LAS 专用 `LAS_API_KEY`；不依赖当前无法通过 Ark 模型接口认证的 `VOLCENGINE_API_KEY`。
+- 修改 `.env.example` 和配置说明；本地 `.env` 只补充必要项，不输出或提交密钥。
+- 对当前已有的 MOSS、提示词、依赖和沙箱改动进行增量合并，不覆盖工作区中的用户修改。
 
-- 单元测试验证首个 Provider 成功后不会调用后续 Provider，空结果/超时/额度错误才 failover，结果最多 3 条。
-- 验证普通搜索不调用 `web_fetch`；显式 URL 请求按 Direct → Jina 执行，正文不超过 6000 字符，SSRF 防护保持有效。
-- 验证运行时工具表、提示词、OpenAPI 和前端路由中不存在 KB/Research V2。
-- 验证服务启动不导入 ML/向量库模块、不访问 Hugging Face、不创建 `kb_store`、`research` 或 `events.sqlite`。
-- 用临时 SQLite 数据验证 checkpoint 裁剪：完整消息历史可恢复、pending interrupt 不变、孤立 writes 被删除、重复运行幂等、备份可恢复。
-- 前端执行类型检查和生产构建，确认知识库引用面板及 Research 页面移除后聊天、联网引用和历史加载正常。
-- 保留并运行通用权限、搜索、抓取、SSE、CLI、文档质量和文件工具测试；删除或替换所有只服务于 KB/Research V2 的测试与 eval。
-- 一次性迁移后逐个验证现有 33 个会话仍可通过 `/chat/messages` 加载，再比较 checkpoint 数据库体积；验收要求历史会话无丢失且数据库明显缩小。
+## 测试与验收
 
-## Assumptions
-
-- 快速和低延迟优先于多源融合、证据账本和自动深度抓取。
-- 搜索摘要及其 URL 是联网回答的唯一默认资料；需要正文时由用户明确触发。
-- 旧 Research 数据只作为离线归档保留，不提供兼容读取 API。
-- 不主动删除或覆盖当前工作区中的原始资料和无关未提交改动。
-- 依赖始终保留在一个 `requirement.txt` 中；环境体积清理由后续重建 `.venv` 完成。
+- 单元测试覆盖 Skill 发现、attribution guard、嵌套可信脚本、任意脚本拒绝、环境变量白名单、视觉请求格式、路径及图片数量限制、国内图片后端锁定和 PPTX artifact 识别。
+- 使用 mock 验证 Qwen3-VL 请求、超时和错误处理；账号额度允许时执行一次小图实时视觉识别。
+- 启动并检查确认页和 SVG 编辑器的健康检查、阶段切换及关闭流程。
+- 执行最小三页 Quick 工作流：项目位于 `tmp`，完成 SVG 检查、PPTX 导出、postflight，并验证文件为可打开 ZIP 且页数正确。
+- 分别冒烟验证 Default Generate、Create Template、Fill Native PPTX、Enhance Native PPTX；确认模板注册只能通过可信脚本写入指定目录。
+- 在 `LAS_API_KEY` 配置完成后仅执行一次计费的 16:9 Seedream 4.5 图片生成测试，验证尺寸和文件可读性；认证失败不自动重试或切换供应商。
+- Web 验收标准：
+  - “快速生成 3 页……”能返回可下载 PPTX。
+  - 默认流程能打开独立确认页，确认后在同一 SSE 运行中继续。
+  - 日志中视觉审阅只出现硅基流动 Qwen3-VL，图片生成只出现火山 Seedream。
+  - 中断或重启后可从 checkpoint 和临时项目继续，不丢失已生成页面。

@@ -28,6 +28,9 @@ def filter_with_tmp(tmp_path: Path) -> _ShellWhitelistFilter:
     skills = tmp_path / "skills" / "demo" / "scripts"
     skills.mkdir(parents=True)
     (skills / "run.py").write_text("# skill\n", encoding="utf-8")
+    nested = skills / "confirm_ui"
+    nested.mkdir()
+    (nested / "server.py").write_text("# nested skill\n", encoding="utf-8")
     return _ShellWhitelistFilter(
         inner,
         allow_commands={"python", "python3", "ls", "echo", "cd", "curl", "bash", "sh"},
@@ -127,6 +130,17 @@ def test_auto_command_skips_soft_without_hitl_trust(filter_with_tmp):
     # filter 的 allow 不含 wc，但 classification=auto 应放行
     resp = filter_with_tmp._reject_if_disallowed("wc -l foo", trust_level="strict")
     assert resp is None
+
+
+def test_nested_skill_script_is_trusted_but_tmp_script_is_not(filter_with_tmp):
+    trusted = filter_with_tmp._reject_if_disallowed(
+        "python skills/demo/scripts/confirm_ui/server.py", trust_level="strict"
+    )
+    assert trusted is None
+    untrusted = filter_with_tmp._reject_if_disallowed(
+        "python tmp/confirm_ui/server.py", trust_level="strict"
+    )
+    assert untrusted is not None
 
 
 def test_hitl_approved_bypasses_python_c(filter_with_tmp):

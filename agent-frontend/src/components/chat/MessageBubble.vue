@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain, Wrench, ChevronRight, Globe } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { Copy, Check, RefreshCw, AlertCircle, User, Sparkles, Ban, FileCheck, FileText, FileSpreadsheet, FileCode, Presentation, ChevronDown, Brain, Wrench, ChevronRight, Globe, Clock3 } from 'lucide-vue-next'
 import { useMarkdown } from '@/composables/useMarkdown'
 import type { ToolCallRecord, ArtifactFile, WebReference } from '@/types/domain'
 import FileAttachment from './FileAttachment.vue'
@@ -20,6 +20,8 @@ const props = defineProps<{
   artifacts?: ArtifactFile[]
   /** 联网引用来源（从 web_search / web_fetch 结果解析） */
   webReferences?: WebReference[]
+  executionStartedAt?: number
+  executionDurationMs?: number
   canRegenerate?: boolean
 }>()
 
@@ -38,6 +40,43 @@ const isError = computed(() => props.status === 'error')
 const isStreaming = computed(() => props.status === 'streaming')
 const isCancelled = computed(() => props.status === 'cancelled')
 const isAwaitingApproval = computed(() => props.status === 'awaiting_approval')
+const durationNow = ref(Date.now())
+let durationTimer: ReturnType<typeof setInterval> | undefined
+
+const executionDurationMs = computed(() => {
+  if (props.executionDurationMs !== undefined) return props.executionDurationMs
+  if (props.executionStartedAt === undefined) return undefined
+  return Math.max(0, durationNow.value - props.executionStartedAt)
+})
+const hasExecutionDuration = computed(() => executionDurationMs.value !== undefined)
+
+function syncDurationTimer() {
+  if (durationTimer) clearInterval(durationTimer)
+  durationTimer = undefined
+  if (props.status === 'streaming' && props.executionStartedAt !== undefined && props.executionDurationMs === undefined) {
+    durationTimer = setInterval(() => {
+      durationNow.value = Date.now()
+    }, 1000)
+  }
+}
+
+watch(
+  () => [props.status, props.executionStartedAt, props.executionDurationMs],
+  syncDurationTimer,
+  { immediate: true }
+)
+onBeforeUnmount(() => {
+  if (durationTimer) clearInterval(durationTimer)
+})
+
+function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) return ''
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const restSeconds = Math.floor(seconds % 60)
+  return `${minutes} 分 ${String(restSeconds).padStart(2, '0')} 秒`
+}
 const hasContent = computed(() => !!(props.content && props.content.trim()))
 const hasThinkingContent = computed(() => !!(props.thinkingContent && props.thinkingContent.trim()))
 const hasToolCalls = computed(() => !!(props.toolCalls && props.toolCalls.length > 0))
@@ -319,6 +358,10 @@ async function copy() {
           >
             <Brain class="size-3.5" :class="{ 'animate-pulse': isActivelyThinking }" />
             <span>{{ isActivelyThinking ? '处理中…' : '已处理任务' }}</span>
+            <span v-if="hasExecutionDuration" class="inline-flex items-center gap-1 ml-1 font-mono tabular-nums text-[10px] text-ink-subtle">
+              <Clock3 class="size-3" />
+              {{ formatDuration(executionDurationMs) }}
+            </span>
             <ChevronDown
               class="size-3.5 transition-transform duration-200"
               :class="{ 'rotate-180': !thinkingExpanded }"

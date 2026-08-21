@@ -294,7 +294,7 @@ def _build_default_allow_pattern(commands: Iterable[str]) -> re.Pattern[str]:
 
 
 def _discover_skill_scripts(root: Path) -> frozenset[str]:
-    """启动时 glob `<root>/skills/*/scripts/*.{py,sh}`，返回相对 root 的 POSIX 路径集合。
+    """Discover trusted scripts recursively below each skill's ``scripts/``.
 
     这是 execute 脚本白名单的来源——deepagents 无 skills 脚本注册表，必须自己扫。
     每次启动重新扫，所以新增 skill 脚本重启即生效（无需改代码）。
@@ -307,7 +307,7 @@ def _discover_skill_scripts(root: Path) -> frozenset[str]:
     if not scripts_dir.is_dir():
         return frozenset()
     found: set[str] = set()
-    for pattern in ("*/scripts/*.py", "*/scripts/*.sh"):
+    for pattern in ("*/scripts/**/*.py", "*/scripts/**/*.sh"):
         for p in scripts_dir.glob(pattern):
             try:
                 rel = p.resolve().relative_to(root.resolve())

@@ -9,7 +9,7 @@ metadata:
 
 # Diagram Design
 
-基于上游 [Diagram Design](https://github.com/cathrynlavery/diagram-design)（MIT）改编的 DeepAgent Skill。产出自包含 HTML（内联 SVG + CSS）的编辑级图表。
+基于上游 [Diagram Design](https://github.com/cathrynlavery/diagram-design)（MIT）改编的 DeepAgent Skill。产出自包含 HTML（内联 SVG + CSS）和同名独立 SVG 的编辑级图表。
 
 Twenty-eight visual types. Semantic patterns describe behavior independently; type references describe layout. Details load from `references/` only when selected.
 
@@ -23,6 +23,7 @@ Twenty-eight visual types. Semantic patterns describe behavior independently; ty
 6. **模板拷贝**：`read_file` `skills/diagram-design/assets/template.html`（或 dark/full/motion/terminal），再 `write_file output/<slug>.html`。不要用 `cp`。
 7. **工作皮肤**：有效 style-guide 是 `tmp/diagram-design/style-guide.md`。读取 shipped 默认用 `skills/diagram-design/references/style-guide.md`（只读，永不 edit）。
 8. **绘制前确认**：用户可达时用 `ask_user_question` 确认类型 / 尺寸 / 拟删减；请求已钉死类型、尺寸、内容时可跳过。
+9. **默认双交付**：每次画完必须产出 `output/<slug>.html` **和** `output/<slug>.svg`。自检通过后**必须**跑 `export_svg.py`；禁止只交 HTML。PNG 仍仅在用户明确要求时用 `render_html`。
 
 ## 命令面
 
@@ -32,6 +33,12 @@ python skills/diagram-design/scripts/export_svg.py --file output/<slug>.html --o
 python skills/diagram-design/scripts/extract_brand.py --url https://example.com
 python skills/diagram-design/scripts/drawio_extract.py uploads/<file>.drawio --out tmp/diagram-design/ir.md
 python skills/diagram-design/scripts/mermaid_extract.py uploads/<file>.mmd --out tmp/diagram-design/ir.md
+```
+
+自检通过后**必跑**（默认交付的一部分，不是可选导出）：
+
+```text
+python skills/diagram-design/scripts/export_svg.py --file output/<slug>.html --out output/<slug>.svg
 ```
 
 PNG 导出（用户明确要求时）：`render_html(html_path="output/<slug>.html")`。
@@ -533,6 +540,7 @@ Every diagram ships in three variants (see `assets/`):
 3. Edit `output/<slug>.html`: replace the eyebrow, h1, and SVG body. Replace `[diagram-slug]` with the file slug and fill `<title>` / `<desc>`. Apply tokens from `tmp/diagram-design/style-guide.md` (fallback: shipped `references/style-guide.md`).
 4. If motion is requested, load `animation.md`; otherwise keep mode `none` and no script.
 5. Run the §9 taste gate, then `python skills/diagram-design/scripts/self_check.py output/<slug>.html`.
+6. **必须导出 SVG**（默认交付，不可跳过）：`python skills/diagram-design/scripts/export_svg.py --file output/<slug>.html --out output/<slug>.svg`。交付时同时给出 `.html` 与 `.svg`。
 
 ---
 
@@ -558,7 +566,7 @@ Every imported diagram is shaped by four decisions. Full spec in [`references/ou
 
 | Dial | Options | Default |
 |---|---|---|
-| **Format** | `html` · `svg` · `png` · `html+png` | `html` |
+| **Format** | `html` · `svg` · `html+svg` · `png` · `html+png` | `html+svg` |
 | **Size** | `doc-inline` · `doc-wide` · `slide-16x9` · `slide-4x3` · `social-og` · `social-square` · `print-a4-landscape` · `print-letter-landscape` · `fit` | `doc-inline` |
 | **Detail** | `faithful` (≤24 nodes, zoned) · `balanced` (≤12) · `simplified` (≤7) | `balanced` |
 | **Audience** | `engineer` · `mixed` · `executive` — governs wording, not count | `mixed` |
@@ -572,7 +580,11 @@ Two consequences worth remembering here:
 
 ## 12. Output
 
-Always produce a single self-contained `.html` file at **`output/<slug>.html`**:
+Always produce a self-contained HTML source and a sibling SVG export:
+
+- `output/<slug>.html` is the editable, browser-previewable source.
+- `output/<slug>.svg` is the standalone diagram export generated from that HTML.
+- Both files are required default deliverables and must be created in the same run.
 
 - Embedded CSS (no external except Google Fonts)
 - Inline SVG (no external images)
@@ -593,6 +605,6 @@ Every diagram is an accessible figure by default:
 
 ### Exporting to PNG / SVG
 
-When the user asks to export, save, rasterize, or convert a generated diagram to `.png` or `.svg`, load [`references/export.md`](references/export.md) and follow the procedure there. SVG: `python skills/diagram-design/scripts/export_svg.py --file output/<slug>.html --out output/<slug>.svg`. PNG: `render_html(html_path="output/<slug>.html")`. Export is **manual** — never produce export files unprompted.
+SVG is part of the default diagram deliverable: after `self_check.py` passes, always run `export_svg.py` and verify that the sibling `.svg` exists. Load [`references/export.md`](references/export.md) for the exact procedure. PNG remains opt-in and uses `render_html` only when the user explicitly requests a raster image.
 
 For an imported diagram, pixel dimensions come from the `viewBox` × scale factor, so its size decision belongs to §11, not to export. For any diagram that needs an exact frame (an OG card or a 1920×1080 slide image), see [`export.md` § Sizing the export](references/export.md).

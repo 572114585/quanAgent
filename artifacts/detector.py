@@ -12,10 +12,15 @@
 
 两套都集中在此模块，调用方无本地实现。
 """
+import logging
 import mimetypes
+import subprocess
+import sys
 from pathlib import Path
 
 from agent_core.config import OUTPUT_DIR
+
+logger = logging.getLogger(__name__)
 
 # 产物 mime 映射（合并自 run.py 的 16 项）。缺失时回退到 mimetypes.guess_type。
 _MIME_MAP = {
@@ -36,6 +41,7 @@ _MIME_MAP = {
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".html": "text/html",
+    ".svg": "image/svg+xml",
     ".zip": "application/zip",
 }
 
@@ -82,6 +88,104 @@ def detect_new_artifacts(before: set) -> list[dict]:
         })
     artifacts.sort(key=lambda a: a["name"])
     return artifacts
+
+
+def finalize_diagram_pairs(before: set) -> None:
+    """Ensure changed diagram HTML files have a sibling SVG before detection.
+
+    ``diagram-design`` treats HTML as the editable source and SVG as a default
+    delivery artifact. The model normally runs ``export_svg.py`` itself, but a
+    missed tool call should not make the result depend on model wording. This
+    narrow fallback only applies to changed HTML files that look like an
+    accessible inline-SVG diagram; ordinary HTML reports are left untouched.
+    """
+    workspace_root = Path(OUTPUT_DIR).resolve().parent
+    script = workspace_root / "skills" / "diagram-design" / "scripts" / "export_svg.py"
+    if not script.is_file():
+        logger.warning("diagram-design SVG fallback unavailable: %s", script)
+        return
+
+    for artifact in detect_new_artifacts(before):
+        if artifact.get("mime") != "text/html":
+            continue
+        html_path = OUTPUT_DIR / str(artifact["path"])
+        svg_path = html_path.with_suffix(".svg")
+        if svg_path.exists() or not _looks_like_diagram_html(html_path):
+            continue
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--file",
+                    f"output/{artifact['path']}",
+                    "--out",
+                    svg_path.relative_to(workspace_root).as_posix(),
+                ],
+                cwd=workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning(
+                "diagram-design SVG fallback failed for %s: %s",
+                artifact["path"],
+                exc,
+            )
+            continue
+        if result.returncode != 0:
+            logger.warning(
+                "diagram-design SVG fallback failed for %s: %s",
+                artifact["path"],
+                (result.stderr or result.stdout).strip(),
+            )
+        else:
+            logger.info(
+                "diagram-design SVG fallback created %s",
+                svg_path.relative_to(workspace_root).as_posix(),
+            )
+
+
+def _looks_like_diagram_html(path: Path) -> bool:
+    try:
+        html = path.read_text(encoding="utf-8").lower()
+    except (OSError, UnicodeError):
+        return False
+    if "diagram-design" in html:
+        return True
+    return "<svg" in html and 'role="img"' in html and "aria-labelledby" in html
+
+
+def attach_moss_urls(artifacts: list[dict]) -> list[dict]:
+    """Upload each output/ artifact to MOSS and swap `url` for the public link.
+
+    Soft-degrades: unconfigured MOSS or a single-file failure leaves the local
+    `/output/...` URL in place. Successful uploads also set `mossUrl`.
+    """
+    if not artifacts:
+        return artifacts
+    from tools.moss_upload import moss_settings, try_upload_output_file
+
+    if not moss_settings().configured:
+        return artifacts
+    attached: list[dict] = []
+    for art in artifacts:
+        updated = dict(art)
+        rel_path = str(art.get("path") or "")
+        if not rel_path:
+            attached.append(updated)
+            continue
+        download_url = try_upload_output_file(
+            OUTPUT_DIR / rel_path,
+            workspace_root=Path(OUTPUT_DIR).resolve().parent,
+        )
+        if download_url:
+            updated["url"] = download_url
+            updated["mossUrl"] = download_url
+        attached.append(updated)
+    return attached
 
 
 # ----------------------------- wechat 风格（文件投递） -----------------------------

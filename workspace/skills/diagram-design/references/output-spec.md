@@ -4,7 +4,7 @@ Four dials decide what an imported diagram becomes. Set them **before** redrawin
 
 | Dial | Question it answers | Default |
 |---|---|---|
-| **Format** | Where does this file land? | `html` |
+| **Format** | Where does this file land? | `html+svg` |
 | **Size** | How big is the canvas, and how far away is the reader? | `doc-inline` |
 | **Detail level** | Reproduce every element, or compress it? | `balanced` |
 | **Audience** | How technical should the wording be? | `mixed` |
@@ -17,9 +17,10 @@ Infer choices that are clear from the request (for example, "for my deck" implie
 
 | Format | Deliverable | Keeps | Drops |
 |---|---|---|---|
-| `html` | self-contained `.html` (default) | header, diagram, summary cards, footer, live fonts | nothing |
+| `html` | self-contained `.html` only | header, diagram, summary cards, footer, live fonts | nothing |
 | `svg` | `.svg` next to the source | the `<svg>` node, vector text | editorial wrapper; fonts substitute in offline tools |
 | `png` | `.png` at `device_scale_factor` | pixels exactly as the browser renders them | vector editability |
+| `html+svg` | both `.html` and `.svg` (default) | editable source plus standalone vector export | — |
 | `html+png` | both | — | — |
 
 Always generate the HTML first — `svg` and `png` are produced *from* it via [`export.md`](export.md). Never hand-author an SVG file directly; the HTML is the source of truth and the only artifact the taste gate (SKILL.md §9) is written against.
@@ -28,7 +29,7 @@ Pick by destination:
 
 | Destination | Format | Size preset |
 |---|---|---|
-| Blog post, README, docs site | `html` (embed) or `png` | `doc-inline` |
+| Blog post, README, docs site | `html+svg` (default) or `png` | `doc-inline` |
 | Keynote / PowerPoint / Google Slides | `png` @2 | `slide-16x9` |
 | Figma / Illustrator / further editing | `svg` | `fit` |
 | X / LinkedIn / OG link card | `png` @2 | `social-og` |
@@ -179,4 +180,4 @@ Run alongside the SKILL.md §9 taste gate.
 - [ ] CJK labels given a font fallback?
 - [ ] Fidelity ledger reported for anything cut?
 - [ ] Diagram `<svg>` has `role="img"`, resolving `aria-labelledby`, a non-empty first-child `<title>`, a non-empty `<desc>`, and per-diagram/variant prefixed IDs?
-- [ ] Requested non-HTML formats produced via [`export.md`](export.md), not hand-authored?
+- [ ] The default `html+svg` pair exists, and any additional format was produced via [`export.md`](export.md), not hand-authored?

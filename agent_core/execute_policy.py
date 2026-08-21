@@ -142,6 +142,31 @@ def _segment_has_redirect(segment: str) -> bool:
     return False
 
 
+def _is_cc_notification_script(segment: str, head: str, tokens: list[str]) -> bool:
+    """识别 CC 消息 Skill，避免外部通知在 workspace_auto 下静默发送。"""
+    if head not in {"python", "python3", "py"}:
+        return False
+    # python -c/-m/- 仍按解释器内联命令处理，不能被脚本路径规则误识别。
+    inline_options = _INTERPRETER_INLINE_OPTIONS.get(head, frozenset())
+    if any(token.lower() in inline_options for token in tokens[1:]):
+        return False
+
+    target_suffix = "skills/send-cc-msg/scripts/send_cc_msg.py"
+    for token in tokens[1:]:
+        candidate = token.strip().strip("\"'").replace("\\", "/").lower()
+        if candidate == target_suffix or candidate.endswith("/" + target_suffix):
+            return True
+
+    # 兜底覆盖 Windows shell 对引号/反斜杠的切分差异。
+    normalized = segment.replace("\\", "/").lower()
+    return bool(
+        re.search(
+            r"(?:^|[\s/'\"])(?:[^\s/'\"]*/)?skills/send-cc-msg/scripts/send_cc_msg\.py(?=$|[\s'\"])",
+            normalized,
+        )
+    )
+
+
 def _classify_hard_deny(command: str) -> ExecuteClassification | None:
     if _COMMAND_SUBSTITUTION_PATTERN.search(command):
         return ExecuteClassification(
@@ -179,6 +204,14 @@ def _classify_segment(segment: str) -> ExecuteClassification:
             effect="ask",
             reason="empty_or_unparsed",
             risk_note="无法解析命令头，需确认。",
+        )
+
+    if _is_cc_notification_script(segment, head, tokens):
+        return ExecuteClassification(
+            effect="ask",
+            reason="external_notification",
+            risk_note="CC 消息会产生外部通知副作用，发送前需要用户确认。",
+            command_head=head,
         )
 
     # 解释器内联选项
@@ -412,6 +445,13 @@ def classify_execute_command(command: str | None) -> ExecuteClassification:
         if head_guess.startswith("python") or head_guess in ("py", "bash", "sh", "zsh"):
             # 确认无内联 -c/-m
             if not any(f" {opt} " in f" {compact} " or compact.endswith(f" {opt}") for opt in ("-c", "-m", "-s")):
+                if "skills/send-cc-msg/scripts/send_cc_msg.py" in compact.lower():
+                    return ExecuteClassification(
+                        effect="ask",
+                        reason="external_notification",
+                        risk_note="CC 消息会产生外部通知副作用，发送前需要用户确认。",
+                        command_head=head_guess or "python",
+                    )
                 return ExecuteClassification(
                     effect="auto",
                     reason="skill_script",

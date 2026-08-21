@@ -236,11 +236,19 @@ async def handle_message(
         # 同级内仍按 mtime 升序（先改的先发），保持稳定可观察。
         _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
         artifacts.sort(key=lambda p: (0 if p.suffix.lower() in _IMAGE_EXTS else 1, p.stat().st_mtime))
+        from tools.moss_upload import try_upload_output_file
+
         for path in artifacts:
             try:
                 await sender.send_file(user_id, context_token, str(path))
             except Exception:
                 logger.exception("send artifact failed: %s", path)
+            download_url = try_upload_output_file(path)
+            if download_url:
+                try:
+                    await sender.send_text(user_id, context_token, f"下载链接：{download_url}")
+                except Exception:
+                    logger.exception("send moss url failed: %s", path)
 
     except Exception as e:
         logger.exception("handle_message failed")

@@ -4,6 +4,8 @@ langchain-openai
 langfuse
 wecom-aibot-python-sdk
 httpx
+requests
+boto3
 markdownify
 qrcode
 pycryptodome
@@ -26,6 +28,10 @@ pydantic>=2.5
 langgraph-checkpoint-sqlite>=2.0
 pytest>=8.0
 pytest-asyncio>=0.23
+
+# PPT Master is vendored at a locked upstream revision; its optional workflow
+# dependencies are installed through this explicit include.
+-r workspace/skills/ppt-master/requirements.txt
 
 # MinerU 文档解析走云 API(复用 skills/mineru/scripts/extract.py),无需本地 torch/GPU
 # 前置依赖:Node.js + `npm install -g mineru-open-api`

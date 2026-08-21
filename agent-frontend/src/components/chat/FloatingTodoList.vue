@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { CheckCircle2, Circle, Loader2, ChevronDown, ListTodo, Bot, Wrench } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { CheckCircle2, Circle, Loader2, ChevronDown, ListTodo, Bot, Wrench, Clock3 } from 'lucide-vue-next'
 import type { TodoItem, SubagentTask, SubagentStep } from '@/types/domain'
 
 const props = defineProps<{
@@ -26,6 +26,37 @@ const subagentCount = computed(() => subagentList.value.length)
 const runningSubagents = computed(() => subagentList.value.filter((s) => s.status === 'running'))
 const currentSubagent = computed(() => runningSubagents.value[0])
 const subagentCompletedCount = computed(() => subagentList.value.filter((s) => s.status === 'completed').length)
+const durationNow = ref(Date.now())
+let durationTimer: ReturnType<typeof setInterval> | undefined
+
+function syncDurationTimer() {
+  if (durationTimer) clearInterval(durationTimer)
+  durationTimer = undefined
+  if (runningSubagents.value.length > 0) {
+    durationTimer = setInterval(() => {
+      durationNow.value = Date.now()
+    }, 1000)
+  }
+}
+
+watch(() => runningSubagents.value.length, syncDurationTimer, { immediate: true })
+onBeforeUnmount(() => {
+  if (durationTimer) clearInterval(durationTimer)
+})
+
+function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) return ''
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const restSeconds = Math.floor(seconds % 60)
+  return `${minutes} 分 ${String(restSeconds).padStart(2, '0')} 秒`
+}
+
+function subagentDuration(sub: SubagentTask): string {
+  const ms = sub.durationMs ?? (sub.startedAt !== undefined ? Math.max(0, durationNow.value - sub.startedAt) : undefined)
+  return formatDuration(ms)
+}
 
 const hasContent = computed(() => totalCount.value > 0 || subagentCount.value > 0)
 const allDone = computed(
@@ -273,6 +304,10 @@ function stepSummary(step: SubagentStep): string {
                   {{ sub.description }}
                 </p>
               </div>
+              <span v-if="subagentDuration(sub)" class="shrink-0 inline-flex items-center gap-1 text-[10px] font-mono tabular-nums text-ink-subtle">
+                <Clock3 class="size-3" />
+                {{ subagentDuration(sub) }}
+              </span>
             </div>
             <!-- 嵌套步骤 -->
             <ul v-if="sub.steps.length > 0" class="border-t border-border/40 px-2.5 py-1 space-y-1">

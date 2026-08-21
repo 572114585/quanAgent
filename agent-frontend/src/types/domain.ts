@@ -121,6 +121,9 @@ export interface Message {
   pendingInterruptGroups?: InterruptGroup[]
   usage?: { prompt: number; completion: number }
   webReferences?: WebReference[]
+  /** 前端记录的本次 agent 执行开始时间与最终耗时。历史消息可能没有这些字段。 */
+  executionStartedAt?: number
+  executionDurationMs?: number
 }
 
 export interface Session {
@@ -184,6 +187,9 @@ export interface SubagentTask {
   description: string
   /** 整体状态：运行中 / 已完成 */
   status: 'running' | 'completed'
+  /** 前端记录的子智能体执行时间。 */
+  startedAt?: number
+  durationMs?: number
   /** 内部工具调用步骤 */
   steps: SubagentStep[]
 }

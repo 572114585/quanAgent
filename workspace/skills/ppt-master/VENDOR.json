@@ -1,0 +1,20 @@
+{
+  "upstream": {
+    "name": "ppt-master",
+    "repository": "https://github.com/hugohe3/ppt-master",
+    "version": "4.8.0",
+    "commit": "cdabb4e5e0703651f88738df8b5f43eaee7fd50c"
+  },
+  "integration": {
+    "host": "quanAgent",
+    "snapshot": true,
+    "update_policy": "controlled-upgrade; scripts/update_repo.py is disabled",
+    "local_patches": [
+      "references/quanagent-host.md",
+      "Volcengine-only image backend guard",
+      "Agent Plan AGENT_API_KEY-only Seedream credentials",
+      "Seedream 5.0 Lite via /api/plan/v3",
+      "disabled upstream self-update"
+    ]
+  }
+}

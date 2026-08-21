@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
+
+from artifacts import detector
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "workspace" / "skills" / "diagram-design"
@@ -103,6 +106,34 @@ def test_export_svg_writes_standalone_svg():
         for path in (html, dest):
             if path.exists():
                 path.unlink()
+
+
+def test_backend_fallback_completes_missing_svg():
+    """A diagram HTML is delivered as HTML+SVG even if export was skipped."""
+    output = ROOT / "workspace" / "output"
+    output.mkdir(parents=True, exist_ok=True)
+    slug = f".pytest-diagram-{uuid.uuid4().hex}"
+    html = output / f"{slug}.html"
+    svg = output / f"{slug}.svg"
+    original_output = detector.OUTPUT_DIR
+    detector.OUTPUT_DIR = output
+    before = detector.snapshot_output_dir()
+    html.write_text(
+        """<!doctype html><html><!-- diagram-design --><body>
+<svg viewBox="0 0 120 40" role="img" aria-labelledby="mini-title mini-desc">
+<title id="mini-title">Mini</title><desc id="mini-desc">A mini diagram.</desc>
+<rect width="120" height="40" fill="#f5f5f5"/>
+</svg></body></html>""",
+        encoding="utf-8",
+    )
+    try:
+        detector.finalize_diagram_pairs(before)
+        assert svg.is_file()
+        assert "<svg" in svg.read_text(encoding="utf-8")
+    finally:
+        detector.OUTPUT_DIR = original_output
+        html.unlink(missing_ok=True)
+        svg.unlink(missing_ok=True)
 
 
 

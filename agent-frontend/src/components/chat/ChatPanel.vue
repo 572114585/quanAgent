@@ -269,6 +269,8 @@ function onDecide(partial: ResumeGroup[]) {
               :attachments="m.attachments"
               :artifacts="m.artifacts"
               :web-references="m.webReferences"
+              :execution-started-at="m.executionStartedAt"
+              :execution-duration-ms="m.executionDurationMs"
               :can-regenerate="m.role === 'assistant' && (m.status === 'complete' || m.status === 'cancelled' || (m.artifacts && m.artifacts.length > 0))"
               @regenerate="chat.regenerate(props.session.id)"
             />

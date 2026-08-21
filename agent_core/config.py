@@ -17,9 +17,14 @@ UPLOADS_DIR = WORKSPACE_ROOT / "uploads"
 STATE_DIR = WORKSPACE_ROOT / "state"
 CHECKPOINT_DB_PATH = STATE_DIR / "checkpoints.sqlite"
 
-AGENT_RECURSION_LIMIT = int(os.getenv("AGENT_RECURSION_LIMIT", "40"))
-AGENT_RUN_DEADLINE_SECONDS = float(os.getenv("AGENT_RUN_DEADLINE_SECONDS", "300"))
+AGENT_RECURSION_LIMIT = int(os.getenv("AGENT_RECURSION_LIMIT", "120"))
+AGENT_RUN_DEADLINE_SECONDS = float(os.getenv("AGENT_RUN_DEADLINE_SECONDS", "3600"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+
+# PPT visual review is deliberately independent from the primary chat model.
+PPT_VISION_MODEL = os.getenv("PPT_VISION_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct").strip()
+PPT_VISION_TIMEOUT = float(os.getenv("PPT_VISION_TIMEOUT", "120"))
+PPT_VISION_MAX_TOKENS = int(os.getenv("PPT_VISION_MAX_TOKENS", "2000"))
 
 HITL_ENABLED_DEFAULT = os.getenv("HITL_ENABLED", "true").lower() in {"1", "true", "yes"}
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024)))
@@ -55,6 +60,13 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 SEARCH_PROVIDER_COOLDOWN_SECONDS = int(os.getenv("SEARCH_PROVIDER_COOLDOWN_SECONDS", "3600"))
+
+MOSS_ENDPOINT = os.getenv("MOSS_ENDPOINT", "https://moss.lesso.com").rstrip("/")
+MOSS_REGION = os.getenv("MOSS_REGION", "fs").strip() or "fs"
+MOSS_BUCKET = (os.getenv("MOSS_BUCKET") or os.getenv("MOSS_UPLOAD_BUCKET") or "").strip()
+MOSS_ACCESS_KEY = os.getenv("MOSS_ACCESS_KEY", "").strip()
+MOSS_SECRET_KEY = os.getenv("MOSS_SECRET_KEY", "").strip()
+MOSS_KEY_PREFIX = os.getenv("MOSS_KEY_PREFIX", "quan").strip().strip("/") or "quan"
 
 
 def ensure_runtime_dirs() -> None:

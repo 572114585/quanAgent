@@ -4,8 +4,10 @@
 两套风格的快照/diff 函数均在此导出（见 detector.py 说明）。
 """
 from artifacts.detector import (
+    attach_moss_urls,
     detect_new_artifacts,
     diff_changed_artifacts,
+    finalize_diagram_pairs,
     snapshot_output_dir,
     snapshot_output_dir_mtime,
 )
@@ -13,6 +15,8 @@ from artifacts.detector import (
 __all__ = [
     "snapshot_output_dir",
     "detect_new_artifacts",
+    "attach_moss_urls",
+    "finalize_diagram_pairs",
     "snapshot_output_dir_mtime",
     "diff_changed_artifacts",
 ]

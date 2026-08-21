@@ -36,6 +36,7 @@ from tools.ask_user_question import ask_user_question
 from tools.get_current_time import get_current_time
 from tools.render_html import render_html
 from tools.report_quality import check_final_report
+from tools.review_ppt_images import review_ppt_images
 from tools.view_image import view_image
 from tools.web_fetch import web_fetch
 from tools.web_search import web_search
@@ -194,6 +195,7 @@ def build_agent(
                     ask_user_question,
                     inspect_file,
                     replace_file,
+                    review_ppt_images,
                 ],
             },
             hooks_mw,
@@ -209,6 +211,7 @@ def build_agent(
             get_current_time,
             render_html,
             view_image,
+            review_ppt_images,
             ask_user_question,
             inspect_file,
             replace_file,
