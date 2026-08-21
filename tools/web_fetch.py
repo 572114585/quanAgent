@@ -32,12 +32,12 @@ def web_fetch(url: str, max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS) -> s
     if not result.ok:
         if any(attempt.detail == "remote_pdf_upload_required" for attempt in result.attempts):
             return "远程 PDF 不进入网页抓取链路，请先上传 PDF 文件，再使用文档处理能力。"
-        return f"fetch failed ({result.failure_summary()}): {url}"
+        return f"fetch failed ({result.failure_summary()}, elapsed_ms={result.elapsed_ms}): {url}"
     title = next(
         (line.lstrip("# ").strip() for line in result.content.splitlines() if line.strip().startswith("#")),
         urlparse(result.final_url or url).hostname or url,
     )
-    body = f"[fetched via {result.channel}] {title}\nURL: {result.final_url or url}\n\n"
+    body = f"[fetched via {result.channel}; elapsed_ms={result.elapsed_ms}] {title}\nURL: {result.final_url or url}\n\n"
     body += wrap_external_content(result.content[:limit], url=result.final_url or url, title=title)
     snippet = re.sub(r"\s+", " ", result.content).strip()[:500]
     refs = [{"title": title, "url": result.final_url or url, "snippet": snippet}]

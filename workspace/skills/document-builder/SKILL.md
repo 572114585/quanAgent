@@ -1,23 +1,23 @@
 ---
 name: document-builder
-description: "把用户需求整理成有来源链接的 Markdown/HTML 文档，并按需交付 PDF。"
+description: "Build source-linked Markdown or HTML documents using bounded parallel research."
+allowed-tools: web_research web_search web_fetch inspect_file replace_file check_final_report
+metadata:
+  network_capable: true
+  read_only: false
+  expected_latency: "5-55s research stage"
+  supports_batch: true
 ---
 
 # Document builder
 
-适用于需要大纲、多个章节和最终质量检查的文档任务；简单问答或单页编辑不使用本流程。
+Use this workflow for outlines, multi-section documents, and final quality
+checks. Define the topic, audience, output format, and evidence gaps first.
+For external facts, dispatch distinct queries through `web_research`; keep the
+shared limit of six queries and the 55-second research deadline. Do not search
+serially merely to fill a source list.
 
-## 流程
-
-1. 明确主题、读者、输出格式和必须回答的问题。
-2. 最多执行 3 次 `web_search`。每次记录标题、URL 和摘要到 `/tmp/source_brief.md`；普通问题只搜索一次，只有无结果时才补搜一次。
-3. 根据用户需求制定简短大纲，资料不足的部分标为“资料不足/待核实”。
-4. 逐章交给 `section-writer`，只使用 source brief、用户文件和已有 Markdown 链接；不让写作者自行联网。
-5. 合并章节，引用使用 `[标题](URL)`，不使用内部证据 ID、运行 ID 或覆盖矩阵。
-6. 调用 `check_final_report`，修复占位符、TODO、缺失链接、关键点和过时预测后再交付。
-
-## 约束
-
-- 搜索摘要和 URL 是默认联网资料。只有用户明确提供 URL 或要求打开网页时才使用 `web_fetch`。
-- 不把未经摘要支持的推断写成事实；无法核实就明确说明缺口。
-- PDF、Word、Excel 和图表按对应 skill 处理；远程 PDF 先提示用户上传文件。
+Search summaries and URLs are default evidence. Fetch only explicitly selected
+pages. Give every factual claim a Markdown URL, mark unsupported claims as
+“资料不足，待核实”, and keep `section-writer` offline. Run
+`check_final_report` before delivery.

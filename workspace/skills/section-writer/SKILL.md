@@ -1,5 +1,10 @@
 ---
 name: section-writer
+metadata:
+  network_capable: false
+  read_only: true
+  expected_latency: "local"
+  supports_batch: true
 description: "根据大纲和已提供的来源资料撰写单个文档章节。"
 ---
 

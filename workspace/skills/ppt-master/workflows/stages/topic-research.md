@@ -64,7 +64,7 @@ confirmation stage.
 
 ## Execution Context
 
-**Default — isolated research when available**: The main agent owns the sufficiency decision and gap brief. When the current AI editor supports and permits an isolated subagent with web/fetch access and write access to the declared outputs, dispatch exactly one research worker. Otherwise the main agent runs Steps 2–3 locally.
+**Default — isolated research when available**: The main agent owns the sufficiency decision and gap brief. Dispatch a bounded research coordinator with web/fetch access, then fan out only the declared evidence gaps (up to four workers and six total queries under the shared deadline). Otherwise the main agent runs Steps 2–3 locally.
 
 | Actor | Contract |
 |---|---|

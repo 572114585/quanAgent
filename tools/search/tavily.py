@@ -36,7 +36,7 @@ class TavilyProvider(BaseSearchProvider):
             "include_raw_content": False,  # 省额度,正文由 web_fetch + save_to 落盘
         }
         resp = await self.request("POST", _TAVILY_URL, headers=headers, json=body,
-                                  timeout=6.0)
+                                  timeout=self.timeout)
 
         # 错误码识别:429 Too Many Requests / 402 Payment Required
         if resp.status_code in (429, 402):

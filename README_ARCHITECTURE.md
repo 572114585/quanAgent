@@ -353,7 +353,7 @@ CostControlMiddleware
 ObservabilityMiddleware
 ```
 
-**权限与 Plan Mode（已落地）**：`agent_core/permissions.py` + `agent_core/execute_policy.py` 提供工具级 `allow`/`ask`/`deny` 与命令级 `auto`/`ask`/`deny`。默认 `EXECUTE_PROFILE=workspace_auto`：只读/构建自动执行，解释器内联/联网/安装需 HITL。Plan 拒绝写与 shell；渠道默认 deny 危险工具。Hooks 注入主图与子 agent。环境变量：`AGENT_MODE`、`EXECUTE_PROFILE`、`PERMISSION_EXECUTE`、`PERMISSION_WRITE`、`CHANNEL_DENY_EXECUTE`。当前安全层是字符串策略 + 路径边界，不是 OS 级进程沙盒。
+**权限与 Plan Mode（已落地）**：`agent_core/permissions.py` + `agent_core/execute_policy.py` 提供工具级 `allow`/`ask`/`deny` 与命令级 `auto`/`ask`/`deny`。默认 `EXECUTE_PROFILE=workspace_auto`：非删除命令直接执行，可识别删除命令硬拒绝；`manual` 或 `PERMISSION_EXECUTE=ask` 可显式启用审批。Plan 拒绝写与 shell；渠道默认 deny execute。Hooks 注入主图与子 agent。环境变量：`AGENT_MODE`、`EXECUTE_PROFILE`、`PERMISSION_EXECUTE`、`PERMISSION_WRITE`、`CHANNEL_DENY_EXECUTE`。当前安全层是字符串策略 + 路径边界，不是 OS 级进程沙盒。
 
 **流式事件契约（已落地）**：`agent_core/events.py` 的 `schemaVersion=1`，Web SSE 与 CLI `--format streaming-json` 共用 payload。
 

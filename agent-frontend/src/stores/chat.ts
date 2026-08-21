@@ -405,7 +405,7 @@ export const useChatStore = defineStore('chat', () => {
             if (payload.subagentId) {
               // 塞进 msg.kbReferences 供最终答案下方引用面板渲染
               
-              if (payload.name === 'web_search' || payload.name === 'web_fetch') {
+              if (payload.name === 'web_search' || payload.name === 'web_research' || payload.name === 'web_fetch') {
                 const refs = parseWebRefsFromOutput(payload.output)
                 if (refs && refs.length > 0) mergeWebRefs(msg, refs)
               }
@@ -595,7 +595,7 @@ export const useChatStore = defineStore('chat', () => {
           if (payload.name === 'task') return
           if (payload.subagentId) {
             
-            if (payload.name === 'web_search' || payload.name === 'web_fetch') {
+            if (payload.name === 'web_search' || payload.name === 'web_research' || payload.name === 'web_fetch') {
               const refs = parseWebRefsFromOutput(payload.output)
               if (refs && refs.length > 0) mergeWebRefs(msg, refs)
             }

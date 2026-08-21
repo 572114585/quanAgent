@@ -35,7 +35,7 @@ class BraveProvider(BaseSearchProvider):
         # Brave 用单独的 news 端点;为保持简单,这里仍用 web 端点
         # (news 端点需要额外订阅,免费层不一定支持)
         resp = await self.request("GET", _BRAVE_URL, headers=headers, params=params,
-                                  timeout=6.0)
+                                  timeout=self.timeout)
 
         # 错误码识别
         if resp.status_code in (429, 402):

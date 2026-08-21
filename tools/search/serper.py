@@ -33,7 +33,7 @@ class SerperProvider(BaseSearchProvider):
         body = {"q": query.query, "num": query.max_results}
         url = _SERPER_NEWS_URL if query.topic == "news" else _SERPER_URL
 
-        resp = await self.request("POST", url, headers=headers, json=body, timeout=6.0)
+        resp = await self.request("POST", url, headers=headers, json=body, timeout=self.timeout)
 
         # 错误码识别
         if resp.status_code in (429, 402):

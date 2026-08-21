@@ -2,7 +2,7 @@
 
 默认对齐工作区 Auto（Codex workspace-write + on-request / Claude acceptEdits）：
 - write_file / edit_file → allow（物理写入仍限 workspace/tmp|output）
-- execute → 按命令分类：auto 跳过 HITL；ask 才弹审批；deny 直接拒绝
+- execute → 非删除命令 allow；可识别删除命令 deny
 
 ask → 写入 interrupt_on（带 when 谓词），由 HumanInTheLoop 暂停；
       用户批准后 execute 以 hitl_approved 信任级别运行。
@@ -80,8 +80,9 @@ def resolve_permission(
     1. plan 模式：写/execute → deny；只读/规划 → allow
     2. channel：写/execute → deny（无 UI 无法 ask）
     3. always_approve：ask → allow
-    4. env 覆盖 PERMISSION_EXECUTE / PERMISSION_WRITE
-    5. 默认矩阵 + execute 命令分类（workspace_auto）
+    4. 删除命令硬拒绝
+    5. env 覆盖 PERMISSION_EXECUTE / PERMISSION_WRITE
+    6. 默认矩阵 + execute 命令分类（workspace_auto/manual）
     """
     name = (tool_name or "").strip()
 
@@ -90,7 +91,7 @@ def resolve_permission(
             return "allow"
         if name in _WRITE_TOOLS or name == "execute":
             return "deny"
-        if name in {"get_current_time", "render_html", "view_image", "web_search", "web_fetch"}:
+        if name in {"get_current_time", "render_html", "view_image", "web_search", "web_research", "web_fetch"}:
             return "allow"
         return "deny"
 
@@ -109,26 +110,22 @@ def resolve_permission(
         return "allow"
     if name in ("get_current_time", "render_html", "view_image"):
         return "allow"
-    if name in {"web_search", "web_fetch"}:
+    if name in {"web_search", "web_research", "web_fetch"}:
         return "allow"
 
     if name == "execute":
-        default_exec: Permission = "ask" if hitl_enabled else "allow"
+        # 删除命令优先于任何 allow / ask / always-approve 配置。
+        cmd = None
+        if isinstance(tool_args, dict):
+            raw_cmd = tool_args.get("command")
+            cmd = raw_cmd if isinstance(raw_cmd, str) else None
+        classification = classify_for_profile(cmd)
+        if classification.effect == "deny":
+            return "deny"
+
+        default_exec: Permission = "allow"
         perm = _env_permission("PERMISSION_EXECUTE", default_exec)
-        # 工具级 env=allow/deny 优先；否则按命令分类细化
-        if perm == "ask" and tool_args is not None:
-            cmd = None
-            if isinstance(tool_args, dict):
-                cmd = tool_args.get("command")
-            classification = classify_for_profile(cmd if isinstance(cmd, str) else None)
-            if classification.effect == "auto":
-                perm = "allow"
-            elif classification.effect == "deny":
-                # deny 由 sandbox/hooks 处理；避免无意义审批
-                perm = "deny"
-        elif perm == "ask" and tool_args is None:
-            # 无 args 时保持工具级 ask（interrupt_on 用 when 再细分）
-            pass
+        # 显式 ask 仍可对所有非删除命令启用 HITL；manual profile 也保留。
     elif name in _WRITE_TOOLS:
         default_write: Permission = "allow"
         perm = _env_permission("PERMISSION_WRITE", default_write)
@@ -147,11 +144,16 @@ def _execute_needs_interrupt(request: Any) -> bool:
         return True
     args = tool_call.get("args") or {}
     cmd = args.get("command") if isinstance(args, dict) else None
-    if _env_permission("PERMISSION_EXECUTE", "ask") == "allow":
+    env_permission = _env_permission("PERMISSION_EXECUTE", "allow")
+    if env_permission == "allow":
         return False
-    if _env_permission("PERMISSION_EXECUTE", "ask") == "deny":
+    if env_permission == "deny":
         return False
     classification = classify_for_profile(cmd if isinstance(cmd, str) else None)
+    if classification.effect == "deny":
+        return False
+    if env_permission == "ask":
+        return True
     return classification.effect == "ask"
 
 
@@ -164,7 +166,7 @@ def build_interrupt_on(
 ) -> dict[str, bool | dict] | None:
     """根据矩阵生成 create_deep_agent(interrupt_on=...) 参数。
 
-    execute 使用 InterruptOnConfig + when：workspace_auto 下仅高风险命令弹窗。
+    execute 使用 InterruptOnConfig + when：默认不弹窗；显式 ask/manual 时对非删除命令弹窗。
     """
     if not hitl_enabled or always_approve:
         return None
@@ -186,8 +188,8 @@ def build_interrupt_on(
                     "allowed_decisions": ["approve", "reject"],
                     "when": _execute_needs_interrupt,
                     "description": (
-                        "Shell 命令需要确认（任意代码执行 / 联网 / 安装 / 未知命令）。"
-                        "批准仅针对本次调用；硬拒绝策略（命令替换、灾难性命令）仍不可绕过。"
+                        "Shell 命令需要确认（显式启用 PERMISSION_EXECUTE=ask 或 manual 时）。"
+                        "可识别删除命令始终直接拒绝。"
                     ),
                 }
             else:

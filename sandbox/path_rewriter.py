@@ -3,7 +3,7 @@
 从原 agent_runtime.py L154-718 + L949-989 拆出。纯函数模块，不依赖 deepagents，
 供 backend.py / whitelist.py 复用。包含：
 - 命令分段 / head 提取（lesso 风格的引号感知分段）
-- python/bash/curl 位置参数提取（脚本白名单校验用）
+- python/bash/curl 位置参数提取（兼容旧路径工具）
 - token 级路径改写（虚拟绝对路径 / 盘符根路径 → 相对 root_dir）
 - 编码兼容（utf-8/gbk 双解码）+ 子进程环境精简
 """
@@ -127,7 +127,7 @@ def _extract_command_head(segment: str) -> str | None:
 
 
 # python 解释器选项中"带值"的：下一个 token 是值（不是位置参数），跳过。
-# 覆盖 -W/-X/-c/-m（-c/-m 已被 _PYTHON_BLOCKED_OPTIONS 拦截，这里列全以防遗漏）。
+# 覆盖 -W/-X/-c/-m 等 Python 选项；执行策略不在这里限制解释器内联代码。
 _PYTHON_VALUE_OPTIONS: frozenset[str] = frozenset({"-c", "-m", "-W", "-X"})
 # python "无值"选项（标志位）：单独一个 token，不消费下一个。
 # 包含 -B/-d/-E/-O/-OO/-s/-S/-u/-v 等；长选项 --check-hash-based-pycs=val 自带值。

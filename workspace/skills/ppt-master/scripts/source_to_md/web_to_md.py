@@ -28,6 +28,7 @@ TLS fingerprint handling:
 
 import argparse
 import codecs
+import concurrent.futures
 import datetime
 import io
 import json
@@ -828,6 +829,7 @@ def process_url(
     output_file: str | None = None,
     *,
     download_images: bool = True,
+    output_suffix: str = "",
 ) -> tuple[bool, str, str | None, str | None]:
     """Fetch, convert, and save one web page as Markdown.
 
@@ -851,7 +853,7 @@ def process_url(
             output_path = output_file
         else:
             base_name = derive_base_name(metadata['title'], url)
-            filename = f"{base_name}.md"
+            filename = f"{base_name}{output_suffix}.md"
             output_path = os.path.join(CONFIG["output_dir"], filename)
 
         output_dirname = os.path.dirname(output_path) or "."
@@ -954,6 +956,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Keep remote image links without downloading image files",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.environ.get("WEB_TO_MD_CONCURRENCY", "3")),
+        help="Maximum concurrent URL conversions when processing a batch (default: 3)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -982,18 +990,24 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    results = []
-    for i, url in enumerate(targets):
-        # Allow specific output file only if 1 URL
+    def run_one(item: tuple[int, str]):
+        index, url = item
+        # Allow a specific output file only if there is one URL.
         out = args.output if (len(targets) == 1 and args.output) else None
-        success, url, err, out_path = process_url(
-            url,
-            out,
-            download_images=not args.no_images,
-        )
-        results.append((success, url, err))
-        if args.emit_result and success and out_path:
-            _write_emit_result(args.emit_result, url, out_path)
+        suffix = f"_{index + 1}" if len(targets) > 1 and out is None else ""
+        return process_url(url, out, download_images=not args.no_images, output_suffix=suffix)
+
+    indexed_targets = list(enumerate(targets))
+
+    if len(targets) > 1 and args.concurrency > 1:
+        worker_count = max(1, min(int(args.concurrency), len(targets)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            results = list(executor.map(run_one, indexed_targets))
+    else:
+        results = [run_one(item) for item in indexed_targets]
+
+    if args.emit_result and len(targets) == 1 and results and results[0][0] and results[0][3]:
+        _write_emit_result(args.emit_result, results[0][1], results[0][3])
 
     # Summary
     success_count = sum(1 for r in results if r[0])

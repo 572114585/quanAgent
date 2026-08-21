@@ -2,8 +2,7 @@
 
 从原 agent_runtime.py L39-1238 拆出。两层结构：
 - 内层 _SkillsShellBackend（backend.py）：token 级路径改写 + 编码兼容 + 写路径边界
-- 外层 _ShellWhitelistFilter（whitelist.py）：硬拒绝 + 软策略
-  （HITL 批准或 execute_policy=auto 可绕过软限制）
+- 外层 _ShellWhitelistFilter（whitelist.py）：删除命令硬拒绝 + cwd 边界
 
 注意：这是字符串策略 + 路径边界，不是 OS 级进程沙盒。
 

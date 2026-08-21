@@ -24,23 +24,17 @@ def test_channel_denies_execute_and_write():
 
 
 def test_agent_hitl_asks_execute_allows_write(monkeypatch):
-    """workspace_auto：execute 工具级 ask（when 细分），write/edit 默认放行。"""
+    """默认 execute 直接放行，write/edit 也默认放行。"""
     monkeypatch.delenv("PERMISSION_EXECUTE", raising=False)
     monkeypatch.delenv("PERMISSION_WRITE", raising=False)
     monkeypatch.delenv("EXECUTE_PROFILE", raising=False)
-    assert resolve_permission("execute", mode="agent", entrypoint="web", hitl_enabled=True) == "ask"
+    assert resolve_permission("execute", mode="agent", entrypoint="web", hitl_enabled=True) == "allow"
     assert resolve_permission("write_file", mode="agent", entrypoint="web", hitl_enabled=True) == "allow"
     assert resolve_permission("edit_file", mode="agent", entrypoint="web", hitl_enabled=True) == "allow"
     assert resolve_permission("replace_file", mode="agent", entrypoint="web", hitl_enabled=True) == "allow"
     assert resolve_permission("inspect_file", mode="agent", entrypoint="web", hitl_enabled=True) == "allow"
     interrupt = build_interrupt_on(mode="agent", entrypoint="web", hitl_enabled=True)
-    assert interrupt is not None
-    assert "execute" in interrupt
-    assert isinstance(interrupt["execute"], dict)
-    assert callable(interrupt["execute"].get("when"))
-    assert "write_file" not in interrupt
-    assert "edit_file" not in interrupt
-    assert "replace_file" not in interrupt
+    assert interrupt is None
 
 
 def test_safe_readonly_shell_helper(monkeypatch):
@@ -49,9 +43,10 @@ def test_safe_readonly_shell_helper(monkeypatch):
     monkeypatch.delenv("EXECUTE_PROFILE", raising=False)
     assert is_safe_readonly_shell("ls -la")
     assert is_safe_readonly_shell("git status && pwd")
-    assert not is_safe_readonly_shell("echo $(whoami)")
-    assert not is_safe_readonly_shell("python script.py")
-    # 安全命令按分类 auto → allow，不再一律 ask
+    assert is_safe_readonly_shell("echo $(whoami)")
+    assert is_safe_readonly_shell("python script.py")
+    assert not is_safe_readonly_shell("rm output/a.txt")
+    # 非删除命令按分类 auto → allow
     assert (
         resolve_permission(
             "execute",
@@ -110,6 +105,7 @@ def test_unknown_tool_is_denied():
 def test_network_tools_are_allowed_in_agent_mode():
     for name in (
         "web_search",
+        "web_research",
         "web_fetch",
         "check_final_report",
     ):

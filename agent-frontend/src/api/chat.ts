@@ -91,6 +91,11 @@ async function consumeStream(
       case 'subagent_done':
         handlers.onSubagentDone?.({ subagentId: evt.subagentId })
         break
+      case 'research_start':
+      case 'research_worker_start':
+      case 'research_worker_done':
+      case 'research_done':
+        break
       case 'interrupt':
         handlers.onInterrupt?.(evt.groups)
         break

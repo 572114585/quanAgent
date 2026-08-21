@@ -144,7 +144,7 @@ def llm_supports_vision() -> bool:
     return get_llm_provider() in _DEFAULT_VISION_PROVIDERS
 
 
-def _common_chat_kwargs(*, provider: str) -> dict[str, Any]:
+def _common_chat_kwargs(*, provider: str, research: bool = False) -> dict[str, Any]:
     """各 provider 共用的可选 ChatOpenAI 参数（空 env 则不传）。"""
     kwargs: dict[str, Any] = {}
     temp = os.getenv("LLM_TEMPERATURE", "").strip()
@@ -160,11 +160,17 @@ def _common_chat_kwargs(*, provider: str) -> dict[str, Any]:
     # 429 / TPM：OpenAI 兼容 SDK 会对 RateLimitError 做指数退避重试。
     # 硅基流动 TPM 窗口通常约 1 分钟，默认多试几次；见
     # https://api-docs.siliconflow.cn/docs/userguide/faqs/rate-limit-and-upgradation
-    retries_raw = os.getenv("LLM_MAX_RETRIES", "").strip()
-    if retries_raw:
-        kwargs["max_retries"] = max(0, int(retries_raw))
+    if research:
+        from agent_core.config import WEB_RESEARCH_LLM_MAX_RETRIES, WEB_RESEARCH_LLM_TIMEOUT
+
+        kwargs["timeout"] = WEB_RESEARCH_LLM_TIMEOUT
+        kwargs["max_retries"] = max(0, WEB_RESEARCH_LLM_MAX_RETRIES)
     else:
-        kwargs["max_retries"] = 3
+        retries_raw = os.getenv("LLM_MAX_RETRIES", "").strip()
+        if retries_raw:
+            kwargs["max_retries"] = max(0, int(retries_raw))
+        else:
+            kwargs["max_retries"] = 2
 
     extra_body: dict[str, Any] = {}
     enable_thinking = _parse_bool(os.getenv("LLM_ENABLE_THINKING"))
@@ -182,7 +188,7 @@ def _common_chat_kwargs(*, provider: str) -> dict[str, Any]:
     return kwargs
 
 
-def create_llm(provider: str | None = None):
+def create_llm(provider: str | None = None, *, research: bool = False):
     """根据 .env 中的 LLM_PROVIDER 创建对应的 LLM 实例。"""
     provider = (provider or get_llm_provider()).strip().lower()
     specs = _provider_specs()
@@ -206,7 +212,7 @@ def create_llm(provider: str | None = None):
         "base_url": os.getenv(spec["base_url_env"], spec["base_url_default"]),
         "api_key": api_key,
     }
-    kwargs.update(_common_chat_kwargs(provider=provider))
+    kwargs.update(_common_chat_kwargs(provider=provider, research=research))
     return ChatOpenAI(**kwargs)
 
 

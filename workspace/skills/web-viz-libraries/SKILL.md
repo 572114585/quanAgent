@@ -2,6 +2,11 @@
 name: web-viz-libraries
 description: "Quick reference for embedding 8 visualization libraries (echarts, Three.js, Matter.js, Mapbox, Spline, Rive, Shadertoy, Unicorn Studio) into HTML artifacts. Use when the user wants charts, 3D, physics, maps, animations, or shader effects in a web page. Provides pinned CDN URLs, minimal embed templates, and a decision tree. Not a design system — for visual design language use web-design-engineer."
 allowed-tools: read_file write_file edit_file web_search render_html
+metadata:
+  network_capable: true
+  read_only: false
+  expected_latency: "5-10s"
+  supports_batch: false
 ---
 
 # Web Visualization Libraries — Quick Reference

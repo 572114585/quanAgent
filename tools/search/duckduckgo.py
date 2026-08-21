@@ -42,7 +42,7 @@ class DuckDuckGoProvider(BaseSearchProvider):
             loop.run_in_executor(
                 None, _ddgs_search, query.query, query.max_results, query.topic
             ),
-            timeout=6.0,
+            timeout=self.timeout,
         )
 
         results: list[SearchResult] = []

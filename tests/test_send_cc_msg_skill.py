@@ -44,27 +44,27 @@ def test_skill_files_and_frontmatter_are_discoverable() -> None:
         "python D:\\codes\\quanAgent\\workspace\\skills\\send-cc-msg\\scripts\\send_cc_msg.py --receiver_id 1 --message hi",
     ],
 )
-def test_cc_notification_requires_hitl(command: str) -> None:
+def test_cc_notification_is_non_delete_command(command: str) -> None:
     classification = classify_execute_command(command)
-    assert classification.effect == "ask"
-    assert classification.reason == "external_notification"
+    assert classification.effect == "auto"
+    assert classification.reason == "allowed_command"
 
 
 def test_regular_skill_script_stays_auto() -> None:
     classification = classify_execute_command("python skills/word-docx/scripts/create.py")
     assert classification.effect == "auto"
-    assert classification.reason == "skill_script"
+    assert classification.reason == "allowed_command"
 
 
-def test_cc_notification_in_command_chain_requires_hitl() -> None:
+def test_cc_notification_in_command_chain_is_allowed() -> None:
     classification = classify_execute_command(
         "echo preparing && python skills/send-cc-msg/scripts/send_cc_msg.py --receiver_id 1 --message hi"
     )
-    assert classification.effect == "ask"
-    assert "external_notification" in classification.reason
+    assert classification.effect == "auto"
+    assert classification.reason == "allowed_command"
 
 
-def test_cc_notification_is_wired_to_permission_and_hitl_predicate() -> None:
+def test_cc_notification_uses_default_execute_permission() -> None:
     command = "python skills/send-cc-msg/scripts/send_cc_msg.py --receiver_id 1 --message hi"
 
     assert (
@@ -75,25 +75,19 @@ def test_cc_notification_is_wired_to_permission_and_hitl_predicate() -> None:
             hitl_enabled=True,
             tool_args={"command": command},
         )
-        == "ask"
+        == "allow"
     )
 
     interrupt = build_interrupt_on(mode="agent", entrypoint="web", hitl_enabled=True)
-    assert interrupt is not None
-    predicate = interrupt["execute"]["when"]
-
-    class Request:
-        tool_call = {"name": "execute", "args": {"command": command}, "id": "cc-1"}
-
-    assert predicate(Request()) is True
+    assert interrupt is None
 
 
 def test_inline_python_is_not_misclassified_as_cc_script() -> None:
     classification = classify_execute_command(
         'python -c "print(\'skills/send-cc-msg/scripts/send_cc_msg.py\')"'
     )
-    assert classification.effect == "ask"
-    assert classification.reason == "interpreter_inline"
+    assert classification.effect == "auto"
+    assert classification.reason == "allowed_command"
 
 
 def test_build_cc_message_supports_defaults_and_single_thumbnail() -> None:

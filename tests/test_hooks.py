@@ -80,8 +80,9 @@ def test_unknown_tool_denied_by_hooks():
     assert "E_PERMISSION_DENIED" in decision.message
 
 
-def test_ask_without_interrupt_on_is_denied():
-    """perm=ask 但未登记 interrupt_on → fail-closed。"""
+def test_explicit_ask_without_interrupt_on_is_denied(monkeypatch):
+    """显式 PERMISSION_EXECUTE=ask 但未登记 interrupt_on → fail-closed。"""
+    monkeypatch.setenv("PERMISSION_EXECUTE", "ask")
     rt = HooksRuntime(
         mode="agent",
         entrypoint="web",
@@ -91,7 +92,7 @@ def test_ask_without_interrupt_on_is_denied():
     ctx = HookContext(
         event="before_tool",
         tool_name="execute",
-        tool_args={"command": "pip install x"},  # ask 类，非 auto
+        tool_args={"command": "pip install x"},
         tool_call_id="tc-ask",
         mode="agent",
         entrypoint="web",

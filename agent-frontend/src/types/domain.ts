@@ -218,6 +218,10 @@ export type StreamEvent = StreamEventBase & (
   | { type: 'subagent_start'; subagentId: string; subagentType: string; description: string }
   /** 子智能体 task() 结束 —— 把对应卡片置为已完成 */
   | { type: 'subagent_done'; subagentId: string }
+  | { type: 'research_start'; callId?: string }
+  | { type: 'research_worker_start'; callId?: string; subagentId?: string }
+  | { type: 'research_worker_done'; callId?: string; subagentId?: string }
+  | { type: 'research_done'; callId?: string }
   /** 旧协议兼容：tool 结果预览（旧后端会发这个，前端降级追加到 thinking 区） */
   | { type: 'tool'; name: string; args?: string; preview?: string }
   | { type: 'interrupt'; groups: InterruptGroup[] }

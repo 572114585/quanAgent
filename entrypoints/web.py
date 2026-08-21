@@ -586,7 +586,7 @@ async def _emit_subagent_tool_events(
     args_value = pending.get("args", "") if pending else ""
     _out = str(msg_chunk.content)
     _limit = 5000 if name in (
-        "web_search", "web_fetch",
+        "web_search", "web_research", "web_fetch",
     ) else 500
     output = _out[:_limit]
 
@@ -597,6 +597,12 @@ async def _emit_subagent_tool_events(
         "args": args_value,
         "subagentId": subagent_id,
     }, emitter)
+    if name == "web_research":
+        yield _sse({
+            "type": "research_worker_start",
+            "subagentId": subagent_id,
+            "callId": call_id,
+        }, emitter)
     yield _sse({
         "type": "tool_result",
         "callId": call_id,
@@ -604,6 +610,12 @@ async def _emit_subagent_tool_events(
         "output": output,
         "subagentId": subagent_id,
     }, emitter)
+    if name == "web_research":
+        yield _sse({
+            "type": "research_worker_done",
+            "subagentId": subagent_id,
+            "callId": call_id,
+        }, emitter)
     pending_tools.clear()
 
 
@@ -886,10 +898,12 @@ async def _stream_agent(
                         "name": pending.get("name", name),
                         "args": pending.get("args", ""),
                     }, emitter)
+                    if name == "web_research":
+                        yield _sse({"type": "research_start", "callId": call_id}, emitter)
                     # 2) 再发 tool_result：补全同 callId 的 output / status=completed
                     _output_str = str(msg_chunk.content)
                     _out_limit = 5000 if name in (
-                        "web_search", "web_fetch",
+                        "web_search", "web_research", "web_fetch",
                     ) else 500
                     yield _sse({
                         "type": "tool_result",
@@ -897,6 +911,8 @@ async def _stream_agent(
                         "name": name,
                         "output": _output_str[:_out_limit],
                     }, emitter)
+                    if name == "web_research":
+                        yield _sse({"type": "research_done", "callId": call_id}, emitter)
                 else:
                     # pending 找不到（tool_call_chunks 未累积到 name），
                     # 不再降级发旧 tool 事件（会污染 content），统一发 tool_call + tool_result
@@ -909,7 +925,7 @@ async def _stream_agent(
                     }, emitter)
                     _output_str = str(msg_chunk.content)
                     _out_limit = 5000 if name in (
-                        "web_search", "web_fetch",
+                        "web_search", "web_research", "web_fetch",
                     ) else 500
                     yield _sse({
                         "type": "tool_result",
@@ -1497,7 +1513,7 @@ def _map_history_messages(raw_messages: list, session_id: str) -> list[dict]:
             name = msg.name or ""
             _out = str(msg.content)
             _limit = 5000 if name in (
-                "web_search", "web_fetch",
+                "web_search", "web_research", "web_fetch",
             ) else 500
             output = _out[:_limit]
             record = None

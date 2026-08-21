@@ -11,15 +11,15 @@ This project follows a "full-stack microservices + Skills" architecture. The cor
 - 🤖 **General Agent Kernel** — built on DeepAgents, supports task planning, tool scheduling, and state management
 - 🔌 **Pluggable Skills System** — MinerU document extraction, Word/Excel processing, Markdown-to-PDF, daily reports, editorial diagrams (`diagram-design`), web design, video presentation, and more
 - 🌊 **SSE Streaming Response** — real-time streaming of conversation content, tool call status, and thinking process; thinking content and final answer are rendered separately
-- 👤 **Human-in-the-Loop (HITL)** — high-risk shell (interpreter inline / network / install / unknown) needs confirm; **approve once for this call**; hard denies still apply
-- 🛡️ **Tool-level permissions + workspace Auto** — writes auto-allowed in workspace; `execute` classified as `auto`/`ask`/`deny`; Plan mode plans only; channels deny dangerous tools
+- 👤 **Human-in-the-Loop (HITL)** — optional explicit approval for shell; identifiable delete commands are always denied
+- 🛡️ **Tool-level permissions + workspace Auto** — non-delete `execute` commands are allowed by default; Plan mode plans only; channels deny execute
 - 🪝 **Hooks** — before/after tool intercept (built-in permission + audit; injected into main + subagents; optional `workspace/hooks/*.py`)
 - 📁 **Multimodal Support** — image and document (PDF / Word / Excel / Markdown) upload and parsing
 - 📦 **Automatic Artifact Detection** — files generated during a conversation are auto-detected and pushed to the frontend
 - 💬 **Multi-Channel Access** — WeChat and WeCom channel bridges
 - 🖥️ **Cross-Platform Frontend** — Web + Desktop (Tauri 2) + Mobile, based on Vue 3 + TypeScript
 - 🔧 **Configurable API URL** — backend address can be set dynamically from the frontend settings panel
-- 🔐 **Command safety layer (not an OS sandbox)** — soft policy (bypass after HITL or auto class) + hard deny + write-path boundary + path rewriting; string policy, not OS process isolation
+- 🔐 **Command safety layer (not an OS sandbox)** — command-form delete deny + cwd boundary + path rewriting; string policy, not OS process isolation
 - 🧠 **Multi-LLM Provider** — switch between MiMo (current default), agnes, deepseek, and others via environment variables
 - 🔎 **Multi-Provider Search Failover** — Tavily → Brave → Serper → DuckDuckGo, with 1-hour cooldown on quota errors and DuckDuckGo as the final fallback
 - 💾 **SQLite Task Plan Persistence** — thread state (messages / todos / files / pending interrupts) survives process restarts; HITL resume works across restarts
@@ -119,7 +119,7 @@ LOG_LEVEL=INFO
 
 # === Agent mode & permissions (optional) ===
 # AGENT_MODE=agent|plan
-# EXECUTE_PROFILE=workspace_auto|manual   # default workspace_auto
+# EXECUTE_PROFILE=workspace_auto|manual   # default workspace_auto; manual asks non-delete commands
 # PERMISSION_EXECUTE=ask|allow|deny
 # PERMISSION_WRITE=ask|allow|deny         # default allow
 # CHANNEL_DENY_EXECUTE=true
@@ -223,9 +223,9 @@ d:\project
 │   └── runtime.py               # build_agent() factory + agent singleton + DualSqliteSaver
 ├── sandbox/                     # ~1200-line shell sandbox (split from former agent_runtime.py)
 │   ├── backend.py               # _SkillsShellBackend (path rewriting + encoding)
-│   ├── whitelist.py             # _ShellWhitelistFilter (hard/soft deny) + assembled backend singleton
+│   ├── whitelist.py             # _ShellWhitelistFilter (delete deny + cwd boundary) + backend singleton
 │   ├── trust.py                 # HITL approval trust-level ContextVar
-│   ├── constants.py             # DEFAULT_ALLOWED_COMMANDS, _NODE_BUILD_COMMANDS, hard-deny patterns
+│   ├── constants.py             # delete command forms, path markers, subprocess environment
 │   └── path_rewriter.py         # shlex tokenization + token-level path rewriting
 ├── tools/                       # flat tool package
 │   ├── web_search.py            # @tool web_search (uses tools/search/ failover chain)
@@ -287,16 +287,16 @@ d:\project
 - [x] Markdown rendering + code highlighting (Shiki)
 - [x] File upload (images, PDF, Word, Excel, Markdown; 20MB limit)
 - [x] Multimodal image input (with graceful fallback when model lacks vision)
-- [x] HITL approval flow (high-risk `execute`; `web_search`/`web_fetch` default allow)
+- [x] HITL approval flow (optional explicit `execute` approval; identifiable deletes always deny)
 - [x] Frontend-configurable API Base URL
 - [x] WeChat / WeCom channel bridging
 - [x] Skills system (mineru, excel-xlsx, word-docx, md-to-pdf, daily-report, diagram-design, web-design-engineer, web-video-presentation)
 - [x] **Thinking / final answer separation** — message-structure-based routing; `thinking_delta` → collapsible area, `delta` → main answer area
 - [x] **Automatic artifact detection** — pre/post conversation diff of `output/`; new files pushed via `artifact` events
 - [x] **Command safety layer** (`sandbox/` + `agent_core/execute_policy.py`):
-  - **Workspace Auto**: readonly probes / readonly git / known build-test / skill scripts → auto-run
-  - **Ask once**: `python -c` / `bash -c` / network / install / unknown → HITL; approve bypasses soft policy
-  - **Hard deny** (never bypassed): command substitution, cwd escape, catastrophic patterns
+  - **Default allow**: all non-delete command forms, including inline interpreters, network, install and unknown commands
+  - **Hard deny** (never bypassed): identifiable delete commands and cwd escape
+  - Delete detection is command-form based and cannot reliably inspect arbitrary script/API internals
   - Write-path boundary (`output/`/`tmp/` only) + path rewriting; Hooks injected into subagents
   - **Not** an OS-level process sandbox
 - [x] Multi-LLM Provider switch (MiMo default / agnes / deepseek, etc.)
@@ -326,9 +326,9 @@ d:\project
 - SSE streams must use `async def` generators and `agent.astream()`; otherwise the event loop blocks
 - TypeScript must explicitly handle all SSE event types (no default case)
 - **Path constraints**: agent writes can only land in `output/` or `tmp/`; `skills/` subtree is fully read-only; new skill scripts must be placed under `workspace/skills/<name>/scripts/` and require a service restart to take effect
-- **HITL vs command policy**: default `EXECUTE_PROFILE=workspace_auto`. Routine local commands auto-run; approving a high-risk `execute` applies to that call and bypasses soft policy. Hard rules (command substitution, cwd escape, catastrophic patterns) still apply. `--always-approve` skips all asks (use only with outer isolation)
+- **HITL vs command policy**: default `EXECUTE_PROFILE=workspace_auto` directly runs non-delete commands. `EXECUTE_PROFILE=manual` or `PERMISSION_EXECUTE=ask` can restore approval prompts; identifiable delete commands remain denied even with approval or `--always-approve`.
 - **Path conventions**: SKILL.md may use `/skills/...`, `D:\skills\...`, or `skills/...` — the token-level rewriter unifies them to relative paths; when writing artifacts, you must use the `output/xxx` relative path
-- **curl egress**: without approval only `api.openai.com` is allowed (TTS); after HITL approve other hosts may run; default TTS hosts live in `_CURL_ALLOWED_HOSTS`
+- **curl egress**: command policy no longer restricts curl hosts; network controls must be supplied by the deployment environment if needed
 - **Search providers**: at least one of Tavily / Brave / Serper should have an API key for the best experience; if all three are unconfigured, the chain falls back to DuckDuckGo only
 
 ## Architecture Document

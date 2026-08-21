@@ -5,74 +5,6 @@
 """
 import re
 
-# 默认放行的 shell 命令白名单。
-# - python/python3：跑 skill 脚本必需（-c/-m 被单独拦截防内联代码）。
-# - 只读探查类（ls/dir/cat/type/head/tail/find/pwd/test/echo）：模型探查目录结构用，
-#   无写入/网络副作用，物理工作目录受 root_dir 锁定。
-# - 目录切换类（cd/pushd/popd/chdir）：目标经路径改写后必须在 root_dir 子树内，
-#   越界由 cd 沙箱校验拦截。
-# workspace_auto 下与 execute_policy 对齐的只读/探查 head；
-# 软白名单仍作 strict 兜底；HITL 批准或 classification=auto 时可绕过。
-DEFAULT_ALLOWED_COMMANDS: frozenset[str] = frozenset(
-    {
-        "python",
-        "python3",
-        "py",
-        "ls",
-        "dir",
-        "cat",
-        "type",
-        "head",
-        "tail",
-        "find",
-        "pwd",
-        "test",
-        "echo",
-        "cd",
-        "pushd",
-        "popd",
-        "chdir",
-        "wc",
-        "grep",
-        "findstr",
-        "rg",
-        "sort",
-        "uniq",
-        "tr",
-        "cut",
-        "date",
-        "whoami",
-        "hostname",
-        "which",
-        "where",
-        "tree",
-        "git",
-        "pytest",
-        "ruff",
-        "mypy",
-        "black",
-        "tsc",
-        "vue-tsc",
-        "eslint",
-        "prettier",
-        "make",
-    }
-)
-
-# 拦截的命令替换语法：反引号、$()。
-_COMMAND_SUBSTITUTION_PATTERN = re.compile(r"`|\$\(")
-# 极危险命令硬拒绝（HITL 批准也不可绕过）。对齐 grok-build：deny 优先于审批。
-_HARD_DENY_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # rm -rf / 或 rm -rf /*（\b 在 / 后不可靠，改用空白或行尾）
-    re.compile(r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*[rf][a-zA-Z]*\s+(/|/\*)(?:\s|$)", re.I),
-    re.compile(r"\b(format|mkfs)\b", re.I),
-    re.compile(r"\bdd\s+.*\bof=/dev/", re.I),
-)
-# python 危险选项：-c（内联代码）、-m（模块）、-（stdin）。
-_PYTHON_BLOCKED_OPTIONS = frozenset({"-c", "-m", "-"})
-# bash/sh 危险选项：-c（内联代码）、-s（从 stdin 执行）、-（stdin）。
-# 与 _PYTHON_BLOCKED_OPTIONS 同理，阻止内联代码绕过脚本白名单。
-_BASH_BLOCKED_OPTIONS = frozenset({"-c", "-s", "-"})
 # 引号外的链式命令分隔符。
 _CHAIN_SEPARATORS: frozenset[str] = frozenset({"&&", "||", ";", "|", "&", "\n"})
 # 命令中显式指定 cwd 的常见模式：cd /xxx、pushd /xxx、chdir /xxx。
@@ -121,13 +53,40 @@ _SAFE_SUBPROCESS_ENV_KEYS: tuple[str, ...] = (
     "MOSS_SECRET_KEY",
     "MOSS_KEY_PREFIX",
 )
-# Node 构建链命令：web-video-presentation 等 Node skill 需要。
-# 不并入 DEFAULT_ALLOWED_COMMANDS（保持默认收紧），由调用方按需合并传入。
-_NODE_BUILD_COMMANDS: frozenset[str] = frozenset(
-    {"npm", "npx", "node", "bash", "sh", "jq", "curl", "zip"}
+# 命令形态级删除检测。该策略只识别命令头/子命令，不解析脚本或解释器
+# 内部调用的文件系统 API（例如 Python 的 Path.unlink）。
+_DELETE_COMMAND_HEADS: frozenset[str] = frozenset(
+    {
+        "rm",
+        "rmdir",
+        "unlink",
+        "shred",
+        "srm",
+        "del",
+        "erase",
+        "rd",
+        "remove-item",
+        "ri",
+    }
 )
-# curl 出网 host 白名单：只放行 OpenAI TTS API（web-video-presentation 内置 provider）。
-# 其它 host 一律拒，避免 curl 成为通用出网口子。新增 TTS 后端时在此追加。
+_DELETE_SUBCOMMANDS: dict[str, frozenset[str]] = {
+    "find": frozenset({"-delete", "-delete-all"}),
+    "git": frozenset({"clean"}),
+    "npm": frozenset({"uninstall", "remove", "rm"}),
+    "yarn": frozenset({"remove"}),
+    "pnpm": frozenset({"remove", "rm", "uninstall"}),
+    "bun": frozenset({"remove", "rm", "uninstall"}),
+    "pip": frozenset({"uninstall"}),
+    "pip3": frozenset({"uninstall"}),
+    "pipx": frozenset({"uninstall"}),
+    "uv": frozenset({"remove", "uninstall"}),
+    "poetry": frozenset({"remove"}),
+    "conda": frozenset({"remove", "uninstall"}),
+    "cargo": frozenset({"remove"}),
+    "docker": frozenset({"rm", "rmi"}),
+    "kubectl": frozenset({"delete"}),
+}
+# 兼容旧路径重写工具的 curl host 集合；execute 删除策略不使用该集合限制出网。
 _CURL_ALLOWED_HOSTS: frozenset[str] = frozenset(
     {"api.openai.com"}
 )

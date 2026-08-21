@@ -13,6 +13,10 @@ metadata:
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"
+  network_capable: true
+  read_only: false
+  expected_latency: "10-55s"
+  supports_batch: true
   sponsors:
     - "SPONSORS.md"
     - "SPONSORS_CN.md"

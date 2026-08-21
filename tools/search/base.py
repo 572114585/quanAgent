@@ -55,6 +55,10 @@ class BaseSearchProvider(ABC):
         self.api_key = api_key or ""
         self._cooldown_until = 0.0
         self.client: httpx.AsyncClient | None = None
+        self.timeout = 6.0
+
+    def set_timeout(self, seconds: float) -> None:
+        self.timeout = max(0.1, float(seconds))
 
     def set_client(self, client: httpx.AsyncClient) -> None:
         self.client = client
@@ -68,7 +72,7 @@ class BaseSearchProvider(ABC):
     async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
         if self.client is not None:
             return await self.client.request(method, url, **kwargs)
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             return await client.request(method, url, **kwargs)
 
     async def close(self) -> None:

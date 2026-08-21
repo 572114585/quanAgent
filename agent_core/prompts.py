@@ -32,6 +32,13 @@ SYSTEM_PROMPT = """你是权哥的助手，你叫做小权。
 
 保持 thinking 关闭；不要输出空的思考事件。"""
 
+SYSTEM_PROMPT += """
+For broad or multi-angle research, use the bounded `web_research` tool or
+dispatch several `web-researcher` tasks in one turn with distinct evidence
+gaps. Keep the shared deadline and query budget; report partial results.
+"""
+
+
 _PLAN_MODE_SUFFIX = """
 
 当前为 plan 模式：先给出简短执行计划；涉及写入、执行命令或其他有副作用操作时等待用户批准。"""

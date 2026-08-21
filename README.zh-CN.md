@@ -11,15 +11,15 @@
 - 🤖 **通用 Agent 内核**：基于 DeepAgents，支持任务规划、工具调度、状态管理
 - 🔌 **可插拔 Skills 系统**：MinerU 文档提取、Word/Excel 处理、Markdown 转 PDF、日报、编辑级图表（`diagram-design`）、网页设计、视频演示等技能扩展
 - 🌊 **SSE 流式响应**：实时推送对话内容、工具调用状态、思考过程，思考与最终答案分离渲染；事件契约 `schemaVersion: 1`（与 CLI `--format streaming-json` 共用）
-- 👤 **人机协作（HITL）**：高风险 shell（解释器内联 / 联网 / 安装 / 未知命令）需确认；**批准仅针对本次调用**；硬拒绝仍不可绕过
-- 🛡️ **工具级权限 + 工作区 Auto**：`write_file`/`edit_file` 默认放行；`execute` 按命令 `auto`/`ask`/`deny` 分类；Plan 模式只规划；渠道默认 deny 危险工具
+- 👤 **人机协作（HITL）**：可通过显式配置启用 shell 审批；可识别的删除命令始终拒绝
+- 🛡️ **工具级权限 + 工作区 Auto**：非删除 `execute` 默认放行；Plan 模式只规划；渠道默认禁止 execute
 - 🪝 **Hooks**：工具调用前后拦截（内置权限强制 + 审计；主图与子 agent 均注入；可选 `workspace/hooks/*.py`）
 - 📁 **多模态支持**：图片、文档（PDF / Word / Excel / Markdown）上传与解析
 - 📦 **产物自动检测**：对话过程中生成的文件自动检测并推送给前端
 - 💬 **多渠道接入**：微信、企业微信渠道桥接
 - 🖥️ **跨平台前端**：Web + 桌面（Tauri 2）+ 移动端，基于 Vue 3 + TypeScript
 - 🔧 **可配置 API 地址**：前端设置面板可动态配置后端服务地址
-- 🔐 **命令安全层（非 OS 沙盒）**：软策略（HITL 批准或 auto 可绕过）+ 硬拒绝 + 写路径边界 + 路径改写；当前是字符串策略，不是 OS 进程隔离
+- 🔐 **命令安全层（非 OS 沙盒）**：命令形态级删除拒绝 + cwd 边界 + 路径改写；当前是字符串策略，不是 OS 进程隔离
 - 🧠 **多 LLM Provider**：支持 MiMo（当前默认）/ agnes / deepseek 等，通过环境变量切换
 - 🔎 **多搜索 Provider 失败回退**：Tavily → Brave → Serper → DuckDuckGo，额度错误冷却 1 小时，DuckDuckGo 兜底
 - 💾 **SQLite 任务计划持久化**：thread 状态（messages / todos / files / pending interrupts）跨进程重启可恢复，HITL resume 跨重启生效
@@ -119,8 +119,8 @@ LOG_LEVEL=INFO
 
 # === Agent 模式与权限（可选）===
 # AGENT_MODE=agent|plan          # 默认 agent；plan 只规划不写/不 shell
-# EXECUTE_PROFILE=workspace_auto|manual  # 默认 workspace_auto
-# PERMISSION_EXECUTE=ask|allow|deny   # 工具级；workspace_auto 下再按命令细分
+# EXECUTE_PROFILE=workspace_auto|manual  # 默认 workspace_auto；manual 对非删除命令启用审批
+# PERMISSION_EXECUTE=ask|allow|deny   # 显式收紧；删除命令始终 deny
 # PERMISSION_WRITE=ask|allow|deny     # 默认：allow（工作区内写 tmp/output）
 # CHANNEL_DENY_EXECUTE=true           # 微信/企微默认拒绝 execute
 # HOOKS_DIR=workspace/hooks           # 可选脚本 hooks 目录
@@ -247,9 +247,9 @@ d:\project
 │   └── runtime.py               # build_agent() 工厂 + agent 单例 + DualSqliteSaver
 ├── sandbox/                     # ~1200 行 Shell 沙箱（从原 agent_runtime.py 拆出）
 │   ├── backend.py               # _SkillsShellBackend（路径改写 + 编码兼容）
-│   ├── whitelist.py             # _ShellWhitelistFilter（硬/软拒绝）+ 组装 backend 单例
+│   ├── whitelist.py             # _ShellWhitelistFilter（删除拒绝 + cwd 边界）+ 组装 backend 单例
 │   ├── trust.py                 # HITL 批准信任级别 ContextVar
-│   ├── constants.py             # DEFAULT_ALLOWED_COMMANDS, _NODE_BUILD_COMMANDS, 硬拒绝模式
+│   ├── constants.py             # 删除命令形态、路径标记、子进程环境
 │   └── path_rewriter.py         # shlex 分词 + token 级路径改写函数
 ├── tools/                       # 扁平工具包
 │   ├── web_search.py            # @tool web_search（走 tools/search/ failover 链路）
@@ -311,16 +311,16 @@ d:\project
 - [x] Markdown 渲染与代码高亮（Shiki）
 - [x] 文件上传（图片、PDF、Word、Excel、Markdown，20MB 限制）
 - [x] 多模态图片输入支持（含模型不支持 vision 时的降级提示）
-- [x] HITL 人机协作审批流程（高风险 `execute`；`web_search`/`web_fetch` 默认 allow）
+- [x] HITL 人机协作审批流程（可选显式 `execute` 审批；可识别删除命令始终拒绝）
 - [x] 前端可配置 API Base URL
 - [x] 微信 / 企业微信渠道桥接
 - [x] Skills 系统（mineru、excel-xlsx、word-docx、md-to-pdf、daily-report、diagram-design、web-design-engineer、web-video-presentation）
 - [x] **思考与最终答案分离**：基于消息结构路由，`thinking_delta` 进折叠区，`delta` 进主答案区
 - [x] **产物自动检测**：对话前后对比 `output/` 目录，新增文件通过 `artifact` 事件推送前端
 - [x] **命令安全层**（`sandbox/` + `agent_core/execute_policy.py`）：
-  - **工作区 Auto**：只读探查 / 只读 git / 已知构建测试 / skills 脚本 → 自动执行
-  - **需确认**：`python -c` / `bash -c` / 联网 / 安装 / 未知命令 → 审批一次；批准后绕过软策略
-  - **硬拒绝**（批准也不可绕过）：命令替换（`` ` `` / `$()`）、cd 越出 workspace、极危险模式
+  - **默认放行**：所有非删除命令形态，包括解释器内联、联网、安装和未知命令
+  - **硬拒绝**（批准也不可绕过）：可识别删除命令、cd 越出 workspace
+  - 删除检测是命令形态级，无法可靠识别任意脚本/API 内部的删除调用
   - 写路径边界（仅 `output/`、`tmp/`；`skills/` 只读）+ 路径改写 + utf-8/gbk 双解码
   - 子 agent 注入同一 Hooks，修复「批准后 trust 仍为 strict」
   - **不是** OS 级进程沙盒
@@ -351,9 +351,9 @@ d:\project
 - SSE 流必须使用 `async def` 异步生成器和 `agent.astream()`，否则会阻塞事件循环
 - TypeScript 中需显式处理所有 SSE 事件类型（无 default case）
 - **安全路径约束**：Agent 写文件只能落 `output/` 或 `tmp/`，`skills/` 子树完全只读；新增 skill 脚本需放在 `workspace/skills/<name>/scripts/` 下并重启服务才生效
-- **HITL 与命令分类**：默认 `EXECUTE_PROFILE=workspace_auto`。常规本地命令自动执行；对高风险 `execute` 的 HITL「批准」仅针对本次调用并绕过软策略。命令替换、cd 越界、极危险命令等硬策略仍拦截。`--always-approve` 跳过全部 ask（仅建议在已隔离环境使用）
+- **HITL 与命令分类**：默认 `EXECUTE_PROFILE=workspace_auto`，非删除命令直接执行。`EXECUTE_PROFILE=manual` 或 `PERMISSION_EXECUTE=ask` 可恢复审批；可识别删除命令即使批准或 `--always-approve` 也会拒绝。
 - **路径写法**：SKILL.md 里写 `/skills/...`、`D:\skills\...`、`skills/...` 都会被 token 级改写器统一成相对路径；但写产物时必须用 `output/xxx` 相对路径
-- **curl 出网**：未批准时仅放行 `api.openai.com`（TTS）；HITL 批准后可访问其它 host；新增默认 TTS 后端可改 `_CURL_ALLOWED_HOSTS`
+- **curl 出网**：命令策略不再限制 curl host；如需联网控制，应由部署环境提供
 - **搜索 Provider**：建议至少配置 Tavily / Brave / Serper 中的一个 API key 以获得最佳体验；三者全部留空时链路仅剩 DuckDuckGo 兜底
 
 ## 架构文档
@@ -384,7 +384,7 @@ d:\project
 | `done` | 对话结束（含 `schemaVersion`） |
 | `error` | 错误信息 |
 
-**权限与 Hooks**：工具执行前经权限矩阵（`allow`/`ask`/`deny`）与 `hooks/` middleware（主图与子 agent 均注入）。默认工作区 Auto：`write_file`/`edit_file` 自动放行；`execute` 由 `agent_core/execute_policy.py` 分类——auto 跳过 HITL，ask 才弹审批，deny 直接拒绝。Plan 模式拒绝写与 shell。HITL 批准 ask 类 `execute` 后以 `hitl_approved` 运行（绕过软策略，硬拒绝仍生效）。可选在 `workspace/hooks/*.py` 导出 `before_tool` / `after_tool`。
+**权限与 Hooks**：工具执行前经权限矩阵（`allow`/`ask`/`deny`）与 `hooks/` middleware（主图与子 agent 均注入）。默认非删除 `execute` 直接放行；`EXECUTE_PROFILE=manual` 或 `PERMISSION_EXECUTE=ask` 可启用审批；可识别删除命令直接拒绝。Plan 模式拒绝写与 shell。可选在 `workspace/hooks/*.py` 导出 `before_tool` / `after_tool`。
 
 **思考与最终答案分离机制**：基于消息结构路由，不依赖模型输出文本标记。
 - `reasoning_content` 或工具调用轮的 content → `thinking_delta`（前端折叠区）
