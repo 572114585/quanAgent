@@ -25,6 +25,14 @@ LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 PPT_VISION_MODEL = os.getenv("PPT_VISION_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct").strip()
 PPT_VISION_TIMEOUT = float(os.getenv("PPT_VISION_TIMEOUT", "120"))
 PPT_VISION_MAX_TOKENS = int(os.getenv("PPT_VISION_MAX_TOKENS", "2000"))
+# The Fast PPT lane is deliberately bounded and independent from the general
+# agent deadline.  It never creates a DeepAgents subgraph or checkpoint.
+PPT_FAST_DEADLINE_SECONDS = float(os.getenv("PPT_FAST_DEADLINE_SECONDS", "300"))
+PPT_PAGE_CONCURRENCY = int(os.getenv("PPT_PAGE_CONCURRENCY", "4"))
+PPT_PAGE_TIMEOUT_SECONDS = float(os.getenv("PPT_PAGE_TIMEOUT_SECONDS", "100"))
+PPT_IMAGE_LIMIT = int(os.getenv("PPT_IMAGE_LIMIT", "3"))
+PPT_IMAGE_CONCURRENCY = int(os.getenv("PPT_IMAGE_CONCURRENCY", "3"))
+PPT_FAST_VISION_TIMEOUT = float(os.getenv("PPT_FAST_VISION_TIMEOUT", "35"))
 
 HITL_ENABLED_DEFAULT = os.getenv("HITL_ENABLED", "true").lower() in {"1", "true", "yes"}
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(20 * 1024 * 1024)))

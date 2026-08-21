@@ -12,7 +12,7 @@ from langgraph.types import Command
 
 from agent_core.runtime import DualSqliteSaver
 from tools.ask_user_question import ask_user_question, collect_interrupt_groups
-from tools.checkpoint_maintenance import maintain_checkpoint_db
+from tools.checkpoint_maintenance import compact_thread, maintain_checkpoint_db
 
 
 class ToolCapableFakeModel(FakeMessagesListChatModel):
@@ -153,3 +153,24 @@ async def test_dual_sqlite_saver_async_history_is_iterable():
     finally:
         conn.close()
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_checkpoint_compactor_removes_only_explicitly_completed_child_namespace() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, checkpoint BLOB, metadata BLOB)")
+    conn.execute("CREATE TABLE writes (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT)")
+    conn.executemany(
+        "INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?)",
+        [
+            ("thread", "", "root", b"root", b'{\"status\":\"completed\"}'),
+            ("thread", "tools:done", "child", b"done", b'{\"status\":\"completed\"}'),
+            ("thread", "tools:waiting", "child2", b"interrupt", b'{\"status\":\"completed\"}'),
+        ],
+    )
+    conn.executemany("INSERT INTO writes VALUES (?, ?, ?)", [("thread", "tools:done", "child"), ("thread", "tools:waiting", "child2")])
+
+    assert compact_thread(conn, "thread") == 1
+    assert conn.execute("SELECT count(*) FROM checkpoints WHERE checkpoint_ns='' ").fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM checkpoints WHERE checkpoint_ns='tools:done'").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM checkpoints WHERE checkpoint_ns='tools:waiting'").fetchone()[0] == 1

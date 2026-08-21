@@ -35,6 +35,7 @@ from sandbox import backend
 from tools.ask_user_question import ask_user_question
 from tools.get_current_time import get_current_time
 from tools.render_html import render_html
+from tools.ppt_fast_build import ppt_fast_build_tool
 from tools.report_quality import check_final_report
 from tools.review_ppt_images import review_ppt_images
 from tools.view_image import view_image
@@ -196,6 +197,7 @@ def build_agent(
                     inspect_file,
                     replace_file,
                     review_ppt_images,
+                    ppt_fast_build_tool,
                 ],
             },
             hooks_mw,
@@ -212,6 +214,7 @@ def build_agent(
             render_html,
             view_image,
             review_ppt_images,
+            ppt_fast_build_tool,
             ask_user_question,
             inspect_file,
             replace_file,

@@ -4,16 +4,17 @@ langchain-openai
 langfuse
 wecom-aibot-python-sdk
 httpx
-requests
+requests>=2.31.0
 boto3
-markdownify
+markdownify>=0.11.6
 qrcode
 pycryptodome
 python-dotenv
-openpyxl
+openpyxl>=3.1.0
 python-docx
 pandas
-Pillow
+Pillow>=9.0.0
+numpy>=1.20.0
 PyPDF2
 fpdf2
 playwright
@@ -29,9 +30,23 @@ langgraph-checkpoint-sqlite>=2.0
 pytest>=8.0
 pytest-asyncio>=0.23
 
-# PPT Master is vendored at a locked upstream revision; its optional workflow
-# dependencies are installed through this explicit include.
--r workspace/skills/ppt-master/requirements.txt
+# PPT Master is vendored at a locked upstream revision. Keep its runtime
+# dependencies explicit here so a root-level install is sufficient. The
+# vendored requirements file remains as an upstream reference snapshot.
+PyYAML>=6.0
+python-pptx>=0.6.21
+XlsxWriter>=3.0.0
+skia-pathops>=0.9.2
+uharfbuzz>=0.50.0
+edge-tts>=7.2.8
+PyMuPDF>=1.23.0
+mammoth>=1.6.0
+EbookLib>=0.18
+nbconvert>=7.0.0
+beautifulsoup4>=4.12.0
+curl_cffi>=0.7.0
+google-genai>=1.0.0
+flask>=3.0.0
 
 # MinerU 文档解析走云 API(复用 skills/mineru/scripts/extract.py),无需本地 torch/GPU
 # 前置依赖:Node.js + `npm install -g mineru-open-api`

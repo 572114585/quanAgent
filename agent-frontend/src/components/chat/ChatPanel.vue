@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, nextTick, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Session, Attachment, ResumeGroup } from '@/types/domain'
 import { Send, Square, Paperclip, Sparkles, Wand2, Code2, FileText, X, Loader2 } from 'lucide-vue-next'
 import { useShortcuts } from '@/composables/useShortcuts'
 import MessageBubble from './MessageBubble.vue'
-import FloatingTodoList from './FloatingTodoList.vue'
 import HitlApproval from './HitlApproval.vue'
 import AskUserQuestion from './AskUserQuestion.vue'
 import { useChatStore, type ChatMessage } from '@/stores/chat'
@@ -18,21 +17,6 @@ const chat = useChatStore()
 const sessions = useSessionsStore()
 const router = useRouter()
 
-/** 视口 ≥ 768px 时主区足够宽，任务清单默认展开；否则默认折叠 */
-const hasRoom = ref(false)
-let mq: MediaQueryList | null = null
-const onMqChange = () => {
-  hasRoom.value = mq?.matches ?? false
-}
-onMounted(() => {
-  mq = window.matchMedia('(min-width: 768px)')
-  hasRoom.value = mq.matches
-  mq.addEventListener('change', onMqChange)
-})
-onUnmounted(() => {
-  mq?.removeEventListener('change', onMqChange)
-})
-
 const scrollEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const fileEl = ref<HTMLInputElement | null>(null)
@@ -41,8 +25,6 @@ const pendingAttachments = ref<Attachment[]>([])
 const uploading = ref(false)
 
 const messages = computed<ChatMessage[]>(() => chat.messagesBySession[props.session.id] ?? [])
-const todos = computed(() => chat.todosBySession[props.session.id] ?? [])
-const subagents = computed(() => chat.subagentTasksBySession[props.session.id] ?? [])
 
 const pendingApprovalMsg = computed(() => {
   return [...messages.value].reverse().find(
@@ -208,8 +190,7 @@ function onDecide(partial: ResumeGroup[]) {
 
 <template>
   <div class="relative flex flex-col h-full min-h-0">
-    <!-- 主体：聊天区 + 任务清单区，各占独立区域不重叠 -->
-    <div class="flex flex-1 min-h-0 flex-col md:flex-row">
+    <div class="flex flex-1 min-h-0">
       <!-- 聊天区容器：作为悬浮输入框的定位父级，输入框只悬浮在聊天记录上方 -->
       <div class="relative flex flex-1 flex-col min-h-0 md:order-1">
         <!-- 聊天滚动区：底部留出悬浮输入框的空间；HITL 出现时额外加大留白 -->
@@ -438,8 +419,6 @@ function onDecide(partial: ResumeGroup[]) {
         </div>
       </div>
 
-      <!-- 任务清单：移动端在顶部，桌面端在右侧 -->
-      <FloatingTodoList :todos="todos" :subagents="subagents" :default-expanded="hasRoom" />
     </div>
   </div>
 </template>

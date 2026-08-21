@@ -32,9 +32,24 @@ does not say otherwise.
 
 ## Web confirmation and recovery
 
-- The default flow starts the independent localhost confirmation page. Return
-  its clickable localhost URL in the Web conversation and keep the same SSE run
-  waiting for its result; use chat-only confirmation only on explicit request.
+- The default ordinary business-deck flow is **Fast Generate**. It does not
+  start `confirm_ui`, `svg_editor`, live preview, a first-page check, or
+  `finalize_svg.py`. Create one `fast_contract.json`, then call
+  `ppt_fast_build(project_path)`. It uses four one-shot page workers, at most
+  three Seedream image tasks, one lockless final checker, one Qwen whole-deck
+  visual review, at most one parallel repair pass, and safe editable slide
+  fallbacks. Its deadline is 300 seconds and its final record is
+  `validation/fast_run.json`.
+- Select an existing dedicated route instead when the request requires a
+  confirmation page, real-time preview or annotation, complex animation,
+  narration/video, pixel-faithful reconstruction, native Master/Layout, or a
+  custom template refinement. Those routes make no five-minute promise.
+- Fast workers receive only the compact contract, assigned slides, the
+  `presentation_core` prototype, and declared resources. Do not load the
+  complete Quick reference set or enter a `task()` subgraph/checkpoint.
+- Image failures and page timeouts are terminal for that enhancement only:
+  keep the pre-existing native visual layer and use the contract's editable
+  safe layout. Never switch image providers or retry indefinitely.
 - Keep resumable state in the existing SQLite checkpoint and the project
   directory above. Do not create a background task queue.
 - Pass `timeout=3600` to long-running `execute` calls. Optional capabilities
